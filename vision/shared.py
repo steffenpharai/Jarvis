@@ -102,6 +102,16 @@ def release_camera() -> None:
         _camera_initialised = False
 
 
+def reconnect_camera() -> bool:
+    """Release and re-open the camera.  Useful after USB disconnect/reconnect.
+
+    Returns True if the camera was successfully re-opened.
+    """
+    release_camera()
+    cam = get_camera()
+    return cam is not None
+
+
 # ── YOLO engine singleton ─────────────────────────────────────────────
 _yolo_engine: Any | None = None
 _yolo_class_names: dict[int, str] | None = None
