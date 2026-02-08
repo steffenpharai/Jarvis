@@ -18,6 +18,10 @@ mediapipe>=0.10.0
 # torch
 # torchvision
 
+# Server (FastAPI / WebSocket bridge for PWA)
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
 # Dev & testing
 pytest>=7.4.0
 pytest-asyncio>=0.21.0

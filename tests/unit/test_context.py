@@ -23,9 +23,9 @@ def test_build_messages_with_vision_and_reminders():
         reminders_text="Call mom; Review PR",
     )
     assert out[1]["role"] == "user"
-    assert "[Scene:" in out[1]["content"]
+    assert "[Context:" in out[1]["content"]
     assert "person(2), laptop(1)" in out[1]["content"]
-    assert "[Reminders:" in out[1]["content"]
+    assert "Reminders:" in out[1]["content"]
     assert "Call mom" in out[1]["content"]
 
 
@@ -38,9 +38,9 @@ def test_build_messages_with_time_and_stats():
         system_stats="Power mode: MAXN_SUPER",
     )
     assert out[1]["role"] == "user"
-    assert "[Current time:" in out[1]["content"]
+    assert "[Context:" in out[1]["content"]
     assert "2026-02-07" in out[1]["content"]
-    assert "[System:" in out[1]["content"]
+    assert "Status:" in out[1]["content"]
     assert "MAXN_SUPER" in out[1]["content"]
 
 

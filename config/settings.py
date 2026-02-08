@@ -11,20 +11,22 @@ VENV_ROOT = os.path.join(PROJECT_ROOT, "venv")
 # + GNOME use ~2–3 GiB). Ollama + vision must stay within that; hence OLLAMA_NUM_CTX_MAX = 512.
 RAM_BUDGET_GIB = 7.5
 
-# Ollama – local install, GPU. Default llama3.2:1b (8GB-friendly). Override with OLLAMA_MODEL.
+# Ollama – local install, GPU.  Default qwen3:1.7b (native tool-calling, thinking,
+# 8GB-friendly on Jetson Orin Nano).  Override with OLLAMA_MODEL env var.
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:1b")
-OLLAMA_FALLBACK_MODEL = os.environ.get("OLLAMA_FALLBACK_MODEL", "llama3.2:1b")  # same or smaller on OOM
-# Context size (KV cache). 512 avoids OOM when Cursor/desktop are running; increase only with headroom.
-OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "512"))
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:1.7b")
+OLLAMA_FALLBACK_MODEL = os.environ.get("OLLAMA_FALLBACK_MODEL", "qwen3:1.7b")
+# Context size (KV cache).  4096 tested on Orin Nano 8 GB with YOLOE + desktop
+# running (GPU_OVERHEAD=2 GB in systemd).  Increase only with measured headroom.
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
 # Hard cap so we never exceed this (prevents OOM)
-OLLAMA_NUM_CTX_MAX = 512
+OLLAMA_NUM_CTX_MAX = 4096
 # Server-side memory settings (must also match systemd env via scripts/configure-ollama-systemd.sh):
 #   OLLAMA_FLASH_ATTENTION=1       – flash attention (less KV cache memory)
 #   OLLAMA_KV_CACHE_TYPE=q8_0      – quantize KV cache to 8-bit (halves vs f16)
 #   OLLAMA_NUM_PARALLEL=1          – single concurrent request (no duplicate KV caches)
 #   OLLAMA_MAX_LOADED_MODELS=1     – only one model in GPU at a time
-#   OLLAMA_GPU_OVERHEAD=500000000  – reserve ~500 MB for X11/GNOME/Cursor
+#   OLLAMA_GPU_OVERHEAD=2000000000 – reserve ~2 GB for X11/GNOME/Cursor/YOLOE
 #   OLLAMA_KEEP_ALIVE=5m           – unload model after 5 min idle
 # These are set in systemd, not in-app, but documented here for reference.
 OLLAMA_FLASH_ATTENTION = os.environ.get("OLLAMA_FLASH_ATTENTION", "1") == "1"
@@ -67,3 +69,11 @@ MAX_TOOL_CALLS_PER_TURN = int(os.environ.get("JARVIS_MAX_TOOL_CALLS", "3"))
 
 # Optional GUI vision preview (Phase 5)
 JARVIS_PREVIEW_PATH = os.path.join(os.environ.get("TMPDIR", "/tmp"), "jarvis_preview.jpg")
+
+# ── Server (FastAPI / WebSocket bridge) ──────────────────────────────────
+JARVIS_SERVE_HOST = os.environ.get("JARVIS_SERVE_HOST", "0.0.0.0")
+JARVIS_SERVE_PORT = int(os.environ.get("JARVIS_SERVE_PORT", "8000"))
+JARVIS_WS_PATH = os.environ.get("JARVIS_WS_PATH", "/ws")
+# Optional HTTPS for wss:// (self-signed cert on LAN or Tailscale)
+JARVIS_HTTPS_CERT = os.environ.get("JARVIS_HTTPS_CERT")  # path to .pem
+JARVIS_HTTPS_KEY = os.environ.get("JARVIS_HTTPS_KEY")    # path to .key

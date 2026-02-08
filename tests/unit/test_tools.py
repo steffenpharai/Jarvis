@@ -43,10 +43,12 @@ def test_toggle_sarcasm():
 
 
 @pytest.mark.unit
-def test_list_reminders():
+def test_list_reminders(tmp_path, monkeypatch):
+    """Use a temp directory so we read from a clean state."""
+    monkeypatch.setattr(settings, "DATA_DIR", str(tmp_path))
     out = list_reminders()
     assert isinstance(out, str)
-    assert "reminder" in out.lower() or "No pending" in out or out == "Could not list reminders."
+    assert "No pending" in out or out == "Could not list reminders."
 
 
 @pytest.mark.unit
@@ -64,9 +66,16 @@ def test_run_tool_tell_joke():
 
 
 @pytest.mark.unit
-def test_run_tool_create_reminder():
+def test_run_tool_create_reminder(tmp_path, monkeypatch):
+    """Use a temp directory so test reminders don't pollute real data/."""
+    monkeypatch.setattr(settings, "DATA_DIR", str(tmp_path))
     out = run_tool("create_reminder", {"text": "Test reminder", "time_str": "18:00"})
     assert "added" in out.lower() or "Reminder" in out or "Failed" in out
+    # Verify it wrote to tmp, not the real data dir
+    import json
+    reminders = json.loads((tmp_path / "reminders.json").read_text())
+    assert len(reminders) == 1
+    assert reminders[0]["text"] == "Test reminder"
 
 
 @pytest.mark.unit
@@ -82,3 +91,14 @@ def test_tool_schemas_and_registry():
     for s in TOOL_SCHEMAS:
         name = s.get("function", {}).get("name")
         assert name in TOOL_REGISTRY
+
+
+@pytest.mark.unit
+def test_vision_analyze_delegates_to_shared(monkeypatch):
+    """vision_analyze should delegate to vision.shared.describe_current_scene."""
+    from unittest.mock import patch
+
+    with patch("vision.shared.describe_current_scene", return_value="Objects: person(1). Face count: 1.") as mock_desc:
+        out = run_tool("vision_analyze", {"prompt": "person"})
+        mock_desc.assert_called_once_with("person")
+        assert "person" in out

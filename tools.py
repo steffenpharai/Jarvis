@@ -9,80 +9,16 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Synonym map for vision_analyze prompt (COCO class names)
-_PROMPT_SYNONYMS = {
-    "coffee mug": "cup",
-    "mug": "cup",
-    "coffee": "cup",
-    "laptop computer": "laptop",
-    "mobile": "cell phone",
-    "phone": "cell phone",
-    "tv": "tv",
-    "television": "tv",
-    "sofa": "couch",
-    "dining table": "dining table",
-}
-
-# Lazy-loaded YOLO engine and class names (reused across vision_analyze calls)
-_yolo_engine = None
-_yolo_class_names = None
-
-
-def _get_yolo():
-    """Load and cache YOLO engine and class names."""
-    global _yolo_engine, _yolo_class_names
-    if _yolo_engine is None and settings.yolo_engine_exists():
-        from vision.detector_yolo import get_class_names, load_yolo_engine
-
-        _yolo_engine = load_yolo_engine(settings.YOLOE_ENGINE_PATH)
-        _yolo_class_names = get_class_names(_yolo_engine) if _yolo_engine else None
-    return _yolo_engine, _yolo_class_names
-
 
 def vision_analyze(prompt: str | None = None) -> str:
-    """Run vision on current camera frame; optional prompt to focus (e.g. person, cup). Returns objects, counts, brief description."""
-    try:
-        from vision.camera import open_camera, read_frame
-        from vision.detector_mediapipe import create_face_detector, detect_faces
-        from vision.detector_yolo import run_inference
-        from vision.scene import describe_scene
+    """Run vision on current camera frame; optional prompt to focus (e.g. person, cup).
 
-        cap = open_camera(
-            settings.CAMERA_INDEX,
-            settings.CAMERA_WIDTH,
-            settings.CAMERA_HEIGHT,
-            settings.CAMERA_FPS,
-            device_path=settings.CAMERA_DEVICE,
-        )
-        if not cap:
-            return "Vision temporarily unavailable (camera not found)."
-        try:
-            frame = read_frame(cap)
-        finally:
-            cap.release()
-        if frame is None:
-            return "No frame captured."
-        engine, class_names = _get_yolo()
-        if not engine:
-            return "Vision temporarily unavailable (engine not loaded)."
-        yolo_dets = run_inference(engine, frame)
-        face_det = create_face_detector()
-        faces = detect_faces(face_det, frame) if face_det else []
-        base_desc = describe_scene(yolo_dets, face_count=len(faces), class_names=class_names)
-        if not prompt or not prompt.strip():
-            return f"Objects: {base_desc}. Face count: {len(faces)}."
-        q = prompt.strip().lower()
-        focus = _PROMPT_SYNONYMS.get(q, q)
-        if focus in base_desc.lower():
-            return f"Objects: {base_desc}. Face count: {len(faces)}. Note: '{focus}' detected."
-        from vision.scene import COCO_NAMES
+    Delegates entirely to ``vision.shared.describe_current_scene`` which uses
+    the process-wide camera, YOLOE engine, and MediaPipe face-detector singletons.
+    """
+    from vision.shared import describe_current_scene
 
-        if focus in [c.lower() for c in COCO_NAMES]:
-            return f"Objects: {base_desc}. Face count: {len(faces)}. Note: '{focus}' detected."
-        return f"Objects: {base_desc}. Face count: {len(faces)}."
-    except Exception as e:
-        logger.warning("vision_analyze failed: %s", e)
-        return "Vision temporarily unavailable."
+    return describe_current_scene(prompt)
 
 
 def get_jetson_status() -> str:

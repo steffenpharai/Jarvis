@@ -37,7 +37,7 @@ def test_vision_description_in_prompt():
     )
     assert len(messages) >= 2
     last_user = [m for m in messages if m.get("role") == "user"][-1]
-    assert "[Scene:" in last_user["content"]
+    assert "Scene:" in last_user["content"]
     assert "person(1)" in last_user["content"]
     assert "What do you see?" in last_user["content"]
 
@@ -64,7 +64,7 @@ def test_llm_answers_about_scene_when_vision_in_context():
         settings.OLLAMA_MODEL,
         messages,
         stream=False,
-        num_ctx=min(512, settings.OLLAMA_NUM_CTX),
+        num_ctx=settings.OLLAMA_NUM_CTX,
     )
     if not reply or not reply.strip():
         pytest.skip("Ollama returned empty (GPU OOM?). Free GPU and retry.")
@@ -110,7 +110,6 @@ def test_orchestrator_one_turn_with_vision_and_tools():
             memory,
             short_term,
             vision_description,
-            no_vision=False,
         )
 
     final = asyncio.run(run())
@@ -135,7 +134,7 @@ def test_chat_with_tools_vision_tool_call():
         messages,
         TOOL_SCHEMAS,
         stream=False,
-        num_ctx=min(512, settings.OLLAMA_NUM_CTX),
+        num_ctx=settings.OLLAMA_NUM_CTX,
     )
     content = response.get("content", "")
     tool_calls = response.get("tool_calls", [])

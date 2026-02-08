@@ -56,35 +56,26 @@ def draw_detections_on_frame(
 
 
 def run_live_visualization() -> None:
-    """Open camera, run YOLOE-26N inference, draw detections, show in OpenCV window. Press 'q' to quit."""
+    """Live camera + YOLOE-26N detections in OpenCV window. Press 'q' to quit.
+
+    Uses the process-wide shared camera and engine singletons so no
+    duplicate resources are allocated.
+    """
     import cv2
 
-    from vision.camera import open_camera, read_frame
-    from vision.detector_yolo import get_class_names, load_yolo_engine, run_inference
+    from vision.shared import get_yolo, read_frame, release_camera, run_inference_shared
 
-    cap = open_camera(
-        settings.CAMERA_INDEX,
-        settings.CAMERA_WIDTH,
-        settings.CAMERA_HEIGHT,
-        settings.CAMERA_FPS,
-        device_path=settings.CAMERA_DEVICE,
-    )
-    if not cap:
-        logger.error("Camera not available")
-        return
-    model = load_yolo_engine(settings.YOLOE_ENGINE_PATH)
-    if not model:
+    engine, class_names = get_yolo()
+    if not engine:
         logger.error("YOLOE engine not loaded from %s", settings.YOLOE_ENGINE_PATH)
-        cap.release()
         return
-    class_names = get_class_names(model)
     logger.info("YOLOE-26N live visualization. Press 'q' to quit.")
     try:
         while True:
-            frame = read_frame(cap)
+            frame = read_frame()
             if frame is None:
                 continue
-            dets = run_inference(model, frame)
+            dets = run_inference_shared(frame)
             draw_detections_on_frame(frame, dets, class_names=class_names)
             cv2.putText(
                 frame,
@@ -99,5 +90,5 @@ def run_live_visualization() -> None:
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
     finally:
-        cap.release()
+        release_camera()
         cv2.destroyAllWindows()

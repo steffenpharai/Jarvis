@@ -145,7 +145,7 @@ def main() -> int:
             _log("Skipping YOLOE export (use --with-yolo to build models/yoloe26n.engine)")
 
     if ok:
-        _log("Bootstrap complete. Ensure Ollama is running and model is pulled: ollama pull llama3.2:1b")
+        _log("Bootstrap complete. Ensure Ollama is running and model is pulled: ollama pull qwen3:1.7b")
     else:
         _log("Some steps failed; check output above.")
         return 1

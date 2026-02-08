@@ -112,7 +112,7 @@ def test_multi_llm_calls():
 
     base_url = settings.OLLAMA_BASE_URL
     model = settings.OLLAMA_MODEL
-    fallback = getattr(settings, "OLLAMA_FALLBACK_MODEL", "llama3.2:1b")
+    fallback = getattr(settings, "OLLAMA_FALLBACK_MODEL", "qwen3:1.7b")
     prompts = [
         "Reply with only one word: hello",
         "What is 2 plus 2? Reply with just the number.",
@@ -126,7 +126,7 @@ def test_multi_llm_calls():
             reply = chat(base_url, fallback, messages, stream=False)
         if not reply.strip():
             pytest.skip(
-                "Ollama returned empty (GPU OOM?). Free GPU: sudo scripts/prepare-ollama-gpu.sh; restart ollama; or use OLLAMA_MODEL=llama3.2:1b"
+                "Ollama returned empty (GPU OOM?). Free GPU: sudo scripts/prepare-ollama-gpu.sh; restart ollama; or use OLLAMA_MODEL=qwen3:1.7b"
             )
         assert isinstance(reply, str), f"call {i + 1}: expected str, got {type(reply)}"
         replies.append(reply)
@@ -150,12 +150,12 @@ def test_main_help_includes_orchestrator():
 
 
 @pytest.mark.e2e
-def test_main_orchestrator_starts_no_vision():
-    """Orchestrator with --no-vision starts and runs until timeout (no immediate crash)."""
+def test_main_orchestrator_starts():
+    """Orchestrator starts and runs until timeout (no immediate crash)."""
     root = _project_root()
     try:
         result = subprocess.run(
-            [sys.executable, "main.py", "--orchestrator", "--no-vision"],
+            [sys.executable, "main.py", "--orchestrator"],
             cwd=root,
             capture_output=True,
             text=True,

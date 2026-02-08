@@ -39,11 +39,6 @@ def parse_args():
         help="List audio devices and default sink/source, then exit",
     )
     parser.add_argument(
-        "--no-vision",
-        action="store_true",
-        help="Disable vision context (use with --e2e)",
-    )
-    parser.add_argument(
         "--gui",
         action="store_true",
         help="Show status overlay (Listening / Thinking / Speaking)",
@@ -64,7 +59,12 @@ def parse_args():
     parser.add_argument(
         "--orchestrator",
         action="store_true",
-        help="Run agentic orchestrator: wake → STT → LLM with tools + context → TTS (use --no-vision to disable camera).",
+        help="Run agentic orchestrator: wake → STT → LLM with tools + context → TTS.",
+    )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Run FastAPI server + orchestrator: exposes WebSocket bridge, REST API, and MJPEG stream for the PWA.",
     )
     return parser.parse_args()
 
@@ -164,8 +164,8 @@ def _handle_one_shot(prompt: str):
     _set_gui_status("Idle")
 
 
-def _handle_e2e(no_vision: bool):
-    """Full loop: wake → record → STT → LLM → TTS → play; optional vision in context."""
+def _handle_e2e():
+    """Full loop: wake → record → STT → LLM → TTS → play; always with vision."""
     from audio.input import get_default_input_index, record_to_file
     from audio.output import play_wav
     from llm.context import build_messages
@@ -179,36 +179,23 @@ def _handle_e2e(no_vision: bool):
     vision_lock = threading.Lock()
 
     def vision_thread_fn():
-        if no_vision:
-            return
-        from vision.camera import open_camera, read_frame
-        from vision.detector_mediapipe import create_face_detector, detect_faces
-        from vision.detector_yolo import get_class_names, load_yolo_engine, run_inference
+        from vision.detector_mediapipe import detect_faces
         from vision.scene import describe_scene
+        from vision.shared import get_face_detector, get_yolo, read_frame, run_inference_shared
 
-        cap = open_camera(
-            settings.CAMERA_INDEX,
-            settings.CAMERA_WIDTH,
-            settings.CAMERA_HEIGHT,
-            settings.CAMERA_FPS,
-            device_path=settings.CAMERA_DEVICE,
-        )
-        if not cap:
-            logger.warning("Vision: camera not available")
+        # Trigger lazy init so we fail-fast with a clear message
+        engine, class_names = get_yolo()
+        if not engine:
+            logger.error("Vision thread: YOLOE engine not loaded")
             return
-        yolo = load_yolo_engine(settings.YOLOE_ENGINE_PATH)
-        if not yolo:
-            logger.error("Failed to load YOLOE engine from %s", settings.YOLOE_ENGINE_PATH)
-            return
-        class_names = get_class_names(yolo)
-        face_det = create_face_detector()
+        face_det = get_face_detector()
         frame_count = 0
         while True:
-            frame = read_frame(cap)
+            frame = read_frame()
             if frame is None:
                 time.sleep(0.1)
                 continue
-            yolo_dets = run_inference(yolo, frame)
+            yolo_dets = run_inference_shared(frame)
             faces = detect_faces(face_det, frame) if face_det else []
             desc = describe_scene(yolo_dets, face_count=len(faces), class_names=class_names)
             with vision_lock:
@@ -235,17 +222,16 @@ def _handle_e2e(no_vision: bool):
                     pass
             time.sleep(0.2)
 
-    if not no_vision:
-        if not settings.yolo_engine_exists():
-            logger.error(
-                "Vision requires YOLOE engine at %s. Run: bash scripts/export_yolo_engine.sh",
-                settings.YOLOE_ENGINE_PATH,
-            )
-            raise SystemExit(
-                "Missing models/yoloe26n.engine. Build it with: bash scripts/export_yolo_engine.sh"
-            )
-        vt = threading.Thread(target=vision_thread_fn, daemon=True)
-        vt.start()
+    if not settings.yolo_engine_exists():
+        logger.error(
+            "Vision requires YOLOE engine at %s. Run: bash scripts/export_yolo_engine.sh",
+            settings.YOLOE_ENGINE_PATH,
+        )
+        raise SystemExit(
+            "Missing models/yoloe26n.engine. Build it with: bash scripts/export_yolo_engine.sh"
+        )
+    vt = threading.Thread(target=vision_thread_fn, daemon=True)
+    vt.start()
 
     reminders_path = Path(settings.PROJECT_ROOT) / "data"
     reminders_path.mkdir(parents=True, exist_ok=True)
@@ -324,10 +310,10 @@ def _handle_e2e(no_vision: bool):
                                 logger.info("Used fallback model after OOM")
                             except Exception as e2:
                                 logger.exception("Fallback model also failed: %s", e2)
-                                reply = "I'm overloaded, Sir. Try --no-vision or a smaller model."
+                                reply = "I'm overloaded, Sir. Try a smaller model."
                         else:
                             if "memory" in str(e).lower() or "oom" in str(e).lower():
-                                logger.warning("OOM during LLM; try smaller model or --no-vision")
+                                logger.warning("OOM during LLM; try a smaller model")
                             reply = "I encountered an error, Sir. Try again or use a smaller model."
                             logger.exception("Ollama error: %s", e)
                     if not (reply and reply.strip()):
@@ -352,13 +338,85 @@ def _handle_e2e(no_vision: bool):
             logger.warning("Thermal: %s", thermal)
     except Exception:
         pass
-    logger.info("E2E: full loop (vision=%s). Say wake word to ask.", not no_vision)
+    logger.info("E2E: full loop (vision=on). Say wake word to ask.")
     stop = run_wake_loop(on_wake)
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         stop.set()
+
+
+def _handle_serve():
+    """Run FastAPI (uvicorn) + orchestrator in one process.
+
+    The orchestrator runs as an asyncio task alongside the ASGI server.
+    The bridge shares the orchestrator's query_queue so WebSocket clients
+    can inject text and receive status/reply broadcasts.
+
+    Vision is always enabled.  Status updates are propagated to both the
+    GUI overlay and all WebSocket clients via a combined callback.
+    """
+    import asyncio
+
+    import uvicorn
+    from orchestrator import _gui_status, run_orchestrator
+    from server.app import app
+    from server.bridge import bridge
+
+    Path(settings.DATA_DIR).mkdir(parents=True, exist_ok=True)
+
+    def _combined_status(status: str) -> None:
+        """Forward status to GUI overlay *and* WebSocket clients."""
+        _gui_status(status)
+        bridge.send_status_threadsafe(status)
+
+    async def _run_all():
+        loop = asyncio.get_running_loop()
+        bridge.set_loop(loop)
+
+        # Shared query queue between orchestrator and bridge
+        query_queue: asyncio.Queue = asyncio.Queue()
+        bridge.set_query_queue(query_queue)
+
+        # Uvicorn config (run as an asyncio server inside our loop)
+        ssl_kwargs = {}
+        if settings.JARVIS_HTTPS_CERT and settings.JARVIS_HTTPS_KEY:
+            ssl_kwargs["ssl_certfile"] = settings.JARVIS_HTTPS_CERT
+            ssl_kwargs["ssl_keyfile"] = settings.JARVIS_HTTPS_KEY
+
+        config = uvicorn.Config(
+            app,
+            host=settings.JARVIS_SERVE_HOST,
+            port=settings.JARVIS_SERVE_PORT,
+            log_level="info",
+            **ssl_kwargs,
+        )
+        server = uvicorn.Server(config)
+
+        # Run orchestrator and uvicorn concurrently
+        orch_task = asyncio.create_task(
+            run_orchestrator(
+                query_queue=query_queue,
+                bridge=bridge,
+                status_callback=_combined_status,
+            )
+        )
+        server_task = asyncio.create_task(server.serve())
+
+        _combined_status("Listening")
+        logger.info(
+            "Jarvis serving on %s:%s (orchestrator + API + WS)",
+            settings.JARVIS_SERVE_HOST,
+            settings.JARVIS_SERVE_PORT,
+        )
+        try:
+            await asyncio.gather(server_task, orch_task)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            server.should_exit = True
+            orch_task.cancel()
+
+    asyncio.run(_run_all())
 
 
 def main() -> int:
@@ -376,7 +434,7 @@ def main() -> int:
             logger.info("YOLOE engine present: %s", settings.YOLOE_ENGINE_PATH)
         else:
             logger.warning(
-                "YOLOE engine missing: %s (required for --e2e without --no-vision)",
+                "YOLOE engine missing: %s (required for --e2e / --serve)",
                 settings.YOLOE_ENGINE_PATH,
             )
         return 0
@@ -412,8 +470,14 @@ def main() -> int:
         return 0
 
     if args.e2e:
+        from vision.shared import check_cuda
+
+        ok, msg = check_cuda()
+        if not ok:
+            logger.error("CUDA required for vision: %s", msg)
+            return 1
         _set_gui_status("Listening")
-        _handle_e2e(no_vision=args.no_vision)
+        _handle_e2e()
         return 0
 
     if args.orchestrator:
@@ -423,11 +487,21 @@ def main() -> int:
 
         Path(settings.DATA_DIR).mkdir(parents=True, exist_ok=True)
         _set_gui_status("Listening")
-        asyncio.run(run_orchestrator(no_vision=args.no_vision))
+        asyncio.run(run_orchestrator())
+        return 0
+
+    if args.serve:
+        from vision.shared import check_cuda
+
+        ok, msg = check_cuda()
+        if not ok:
+            logger.error("CUDA required for vision: %s", msg)
+            return 1
+        _handle_serve()
         return 0
 
     logger.info(
-        "Jarvis idle. Use --one-shot [PROMPT], --voice-only, --e2e (full loop), --orchestrator, or --test-audio."
+        "Jarvis idle. Use --one-shot [PROMPT], --voice-only, --e2e (full loop), --orchestrator, --serve, or --test-audio."
     )
     return 0
 

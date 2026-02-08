@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+/* ── Custom theme ────────────────────────────────────────────────── */
+
+@theme {
+	--font-heading: 'Orbitron', sans-serif;
+	--font-body: 'Inter', sans-serif;
+
+	/* Jarvis dark palette */
+	--color-jarvis-bg: #000000;
+	--color-jarvis-surface: #0a0a0f;
+	--color-jarvis-card: #111118;
+	--color-jarvis-border: #1e1e2e;
+	--color-jarvis-cyan: #00ffff;
+	--color-jarvis-magenta: #ff00aa;
+	--color-jarvis-text: #e0e0e8;
+	--color-jarvis-muted: #6b6b80;
+	--color-jarvis-green: #00ff88;
+	--color-jarvis-red: #ff3355;
+	--color-jarvis-glow: rgba(0, 255, 255, 0.15);
+}
+
+/* ── Base resets ─────────────────────────────────────────────────── */
+
+* {
+	box-sizing: border-box;
+}
+
+html, body {
+	margin: 0;
+	padding: 0;
+	background: var(--color-jarvis-bg);
+	color: var(--color-jarvis-text);
+	font-family: var(--font-body);
+	-webkit-font-smoothing: antialiased;
+	overflow-x: hidden;
+	height: 100%;
+}
+
+/* ── Glassmorphism card ──────────────────────────────────────────── */
+
+.glass {
+	background: rgba(17, 17, 24, 0.7);
+	backdrop-filter: blur(16px);
+	-webkit-backdrop-filter: blur(16px);
+	border: 1px solid var(--color-jarvis-border);
+	border-radius: 12px;
+}
+
+/* ── Glow effects ────────────────────────────────────────────────── */
+
+.glow-cyan {
+	box-shadow: 0 0 20px var(--color-jarvis-glow), 0 0 40px rgba(0, 255, 255, 0.08);
+}
+
+.glow-pulse {
+	animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+	0%, 100% { box-shadow: 0 0 20px var(--color-jarvis-glow); }
+	50% { box-shadow: 0 0 40px rgba(0, 255, 255, 0.3), 0 0 60px rgba(0, 255, 255, 0.1); }
+}
+
+@keyframes spin-slow {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+	width: 6px;
+}
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+::-webkit-scrollbar-thumb {
+	background: var(--color-jarvis-border);
+	border-radius: 3px;
+}

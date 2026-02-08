@@ -1,13 +1,15 @@
 """HTTP client to local Ollama (streaming optional).
 
 Jetson Orin Nano 8GB OOM hardening:
-  - num_ctx capped to OLLAMA_NUM_CTX_MAX (default 512)
+  - num_ctx capped to OLLAMA_NUM_CTX_MAX (default 4096)
   - On CUDA OOM: unload model, drop kernel caches, retry with smaller context
   - Flash attention and q8_0 KV cache set via systemd env (see scripts/configure-ollama-systemd.sh)
+  - Text-based fallback parser strips JSON / tool-call leakage from small models
 """
 
 import json
 import logging
+import re
 import subprocess
 import time
 
@@ -31,6 +33,80 @@ def _parse_tool_calls(raw: list) -> list[dict]:
                 args = {}
         out.append({"name": name, "arguments": args if isinstance(args, dict) else {}})
     return out
+
+
+def _extract_text_tool_calls(content: str) -> tuple[str, list[dict]]:
+    """Parse tool calls leaked into text content by small models.
+
+    Handles patterns like:
+      {"name": "tool_name", "parameters": {...}}
+      Action: {"tool": "name", "args": {...}}
+
+    Returns (cleaned_content, extracted_tool_calls).
+    """
+    tool_calls: list[dict] = []
+
+    # Pattern 1: raw JSON object with "name" key
+    json_pattern = re.compile(r'\{[^{}]*"name"\s*:\s*"(\w+)"[^{}]*\}', re.DOTALL)
+    for m in json_pattern.finditer(content):
+        try:
+            obj = json.loads(m.group(0))
+            name = obj.get("name", "")
+            args = obj.get("parameters") or obj.get("arguments") or obj.get("args") or {}
+            if name:
+                tool_calls.append({"name": name, "arguments": args if isinstance(args, dict) else {}})
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # Pattern 2: Action: { ... }
+    action_pattern = re.compile(r'Action:\s*(\{.+?\})', re.DOTALL)
+    for m in action_pattern.finditer(content):
+        try:
+            obj = json.loads(m.group(1))
+            name = obj.get("tool") or obj.get("name") or ""
+            args = obj.get("args") or obj.get("arguments") or obj.get("parameters") or {}
+            if name:
+                tool_calls.append({"name": name, "arguments": args if isinstance(args, dict) else {}})
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    if not tool_calls:
+        return content, []
+
+    # Strip matched JSON / Action blocks from content
+    cleaned = json_pattern.sub("", content)
+    cleaned = action_pattern.sub("", cleaned)
+    cleaned = cleaned.strip().strip("{}").strip()
+    return cleaned, tool_calls
+
+
+def _clean_llm_content(content: str) -> str:
+    """Strip thinking tags, JSON fragments, code fences, and meta-commentary.
+
+    Qwen3 emits ``<think>…</think>`` reasoning blocks.  Small models sometimes
+    echo context or emit partial JSON.  This ensures the final answer is clean
+    natural language suitable for TTS playback.
+    """
+    if not content:
+        return content
+
+    # Strip qwen3-style thinking blocks
+    content = re.sub(r'<think>[\s\S]*?</think>', '', content)
+    # Remove code fences
+    content = re.sub(r'```[\s\S]*?```', '', content)
+    # Remove lone JSON objects / arrays
+    content = re.sub(r'\{[^{}]*"(?:output|context|objects|reminders|name|type)"[^{}]*\}', '', content, flags=re.DOTALL)
+    # Remove parenthetical meta-commentary (e.g. "(no tool call needed)")
+    content = re.sub(r'\((?:Exact time|no tool|tool call|Note:)[^)]*\)', '', content, flags=re.IGNORECASE)
+    # Remove lines that are just JSON keys/values
+    lines = content.split('\n')
+    clean_lines = [ln for ln in lines if not re.match(r'^\s*["\'{}\[\]]', ln.strip())]
+    content = '\n'.join(clean_lines).strip()
+
+    # If nothing meaningful remains, return empty
+    if len(content) < 3:
+        return ""
+    return content
 
 
 def _is_oom_error(response) -> bool:
@@ -60,9 +136,9 @@ def _safe_num_ctx(num_ctx: int) -> int:
     """Cap num_ctx to avoid OOM on 8GB Jetson. Use config cap if available."""
     try:
         from config import settings
-        cap = getattr(settings, "OLLAMA_NUM_CTX_MAX", 512)
+        cap = getattr(settings, "OLLAMA_NUM_CTX_MAX", 4096)
     except Exception:
-        cap = 512
+        cap = 4096
     return min(max(128, num_ctx), cap)
 
 
@@ -114,7 +190,7 @@ def _recover_from_oom(base_url: str, model: str) -> None:
 
 
 # OOM retry sequence: try smaller context until one works
-_OOM_RETRY_NUM_CTX = [512, 256, 128]
+_OOM_RETRY_NUM_CTX = [2048, 1024, 512]
 
 
 def chat(
@@ -122,11 +198,11 @@ def chat(
     model: str,
     messages: list[dict],
     stream: bool = False,
-    num_ctx: int = 512,
+    num_ctx: int = 4096,
 ) -> str:
     """Send chat request to Ollama; return full response content.
 
-    num_ctx is capped to OLLAMA_NUM_CTX_MAX (default 512) to avoid OOM.
+    num_ctx is capped to OLLAMA_NUM_CTX_MAX (default 4096) to avoid OOM.
     On CUDA OOM: unloads model, drops kernel caches, retries with smaller context.
     """
     num_ctx = _safe_num_ctx(num_ctx)
@@ -142,7 +218,10 @@ def chat(
             r = requests.post(url, json=payload, timeout=120)
             if r.status_code == 200:
                 data = r.json()
-                return (data.get("message") or {}).get("content", "")
+                content = (data.get("message") or {}).get("content", "")
+                # Strip qwen3-style thinking blocks from plain chat too
+                content = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
+                return content
             if r.status_code == 500 and _is_oom_error(r):
                 logger.warning(
                     "Ollama GPU OOM (num_ctx=%s). Recovering and retrying.",
@@ -170,9 +249,13 @@ def chat_with_tools(
     messages: list[dict],
     tools: list[dict],
     stream: bool = False,
-    num_ctx: int = 512,
+    num_ctx: int = 4096,
 ) -> dict:
     """Send chat request with tools; return dict with 'content' and 'tool_calls'.
+
+    If the model leaks tool calls as text (common with small models like
+    small models), ``_extract_text_tool_calls`` parses them from the content.
+    Final content is cleaned via ``_clean_llm_content`` to strip JSON residue.
 
     On CUDA OOM: unloads model, drops kernel caches, retries with smaller context.
     """
@@ -191,10 +274,22 @@ def chat_with_tools(
             if r.status_code == 200:
                 data = r.json()
                 msg = data.get("message") or {}
-                return {
-                    "content": (msg.get("content") or "").strip(),
-                    "tool_calls": _parse_tool_calls(msg.get("tool_calls") or []),
-                }
+                content = (msg.get("content") or "").strip()
+                tool_calls = _parse_tool_calls(msg.get("tool_calls") or [])
+
+                # Fallback: small models may leak tool calls as text content
+                if not tool_calls and content:
+                    cleaned, text_tcs = _extract_text_tool_calls(content)
+                    if text_tcs:
+                        logger.debug("Extracted %d tool call(s) from text content", len(text_tcs))
+                        tool_calls = text_tcs
+                        content = cleaned
+
+                # Clean residual JSON / structured data from final content
+                if not tool_calls:
+                    content = _clean_llm_content(content)
+
+                return {"content": content, "tool_calls": tool_calls}
             if r.status_code == 500 and _is_oom_error(r):
                 logger.warning(
                     "Ollama chat_with_tools OOM (num_ctx=%s). Recovering and retrying.",
@@ -223,16 +318,22 @@ def is_ollama_available(base_url: str = "http://127.0.0.1:11434") -> bool:
 
 
 def is_ollama_model_available(base_url: str, model: str) -> bool:
-    """Check if Ollama is reachable and the given model is pulled (avoids 500 on chat)."""
+    """Check if Ollama is reachable and the given model is pulled.
+
+    Matches exactly or by base name (e.g. ``qwen3:1.7b`` matches
+    ``qwen3:1.7b`` listed in tags).
+    """
     try:
         r = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=5)
         if r.status_code != 200:
             return False
         data = r.json()
         models = data.get("models") or []
+        # Normalise: strip :latest suffix for comparison
+        want = model.removesuffix(":latest")
         for m in models:
-            name = m.get("name") or ""
-            if name == model:
+            name = (m.get("name") or "").removesuffix(":latest")
+            if name == want or name == model:
                 return True
         return False
     except Exception:

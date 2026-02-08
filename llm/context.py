@@ -25,16 +25,17 @@ def build_messages_with_history(
 
     messages = [{"role": "system", "content": system}]
 
-    # Optional context for this turn (inject into first user message)
-    parts = []
+    # Optional context for this turn – compact single block to save tokens
+    ctx_parts = []
     if current_time:
-        parts.append(f"[Current time: {current_time}]")
+        ctx_parts.append(f"Time: {current_time}")
     if system_stats:
-        parts.append(f"[System: {system_stats}]")
+        ctx_parts.append(f"Status: {system_stats}")
     if vision_description:
-        parts.append(f"[Scene: {vision_description}]")
+        ctx_parts.append(f"Scene: {vision_description}")
     if reminders_text:
-        parts.append(f"[Reminders: {reminders_text}]")
+        ctx_parts.append(f"Reminders: {reminders_text}")
+    parts = [f"[Context: {'; '.join(ctx_parts)}]"] if ctx_parts else []
 
     # Last N turns (assistant may have tool_calls; we only keep role + content for history)
     for msg in short_term_turns[-max_turns:]:
@@ -63,18 +64,18 @@ def build_messages(
     system_stats: str | None = None,
 ) -> list[dict]:
     """Build chat messages for Ollama: system + optional vision/reminders/time/stats + user."""
-    parts = []
+    ctx_parts = []
     if current_time:
-        parts.append(f"[Current time: {current_time}]")
+        ctx_parts.append(f"Time: {current_time}")
     if system_stats:
-        parts.append(f"[System: {system_stats}]")
+        ctx_parts.append(f"Status: {system_stats}")
     if vision_description:
-        parts.append(f"[Scene: {vision_description}]")
+        ctx_parts.append(f"Scene: {vision_description}")
     if reminders_text:
-        parts.append(f"[Reminders: {reminders_text}]")
+        ctx_parts.append(f"Reminders: {reminders_text}")
     content = user_text
-    if parts:
-        content = "\n\n".join(parts) + "\n\n" + content
+    if ctx_parts:
+        content = f"[Context: {'; '.join(ctx_parts)}]\n\n{content}"
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": content},
