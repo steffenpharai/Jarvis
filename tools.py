@@ -89,20 +89,20 @@ def toggle_sarcasm(enabled: bool) -> str:
     return "Sarcasm mode on." if enabled else "Sarcasm mode off."
 
 
-# Ollama-compatible tool schemas (list of dicts for API tools payload)
+# Ollama-compatible tool schemas – MINIMAL set to reduce prompt tokens.
+# get_current_time, get_jetson_status, and list_reminders are NOT included
+# because time, stats, and reminders are already injected into the user context
+# by the orchestrator.  The LLM never needs to call tools for those.
 TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
             "name": "vision_analyze",
-            "description": "Run vision on current camera frame; optional prompt to focus (e.g. person, cup). Returns objects, counts, brief description.",
+            "description": "Re-scan camera with optional focus prompt.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "Optional focus, e.g. 'person', 'coffee mug'.",
-                    },
+                    "prompt": {"type": "string", "description": "Focus: person, cup, etc."},
                 },
             },
         },
@@ -110,29 +110,13 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "get_jetson_status",
-            "description": "Get Jetson GPU/memory/temperature/power and power mode (tegrastats/jtop).",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_current_time",
-            "description": "Get current date and time formatted.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "create_reminder",
-            "description": "Save a reminder. Optional time (e.g. '14:00' or 'tomorrow').",
+            "description": "Save a reminder with optional time.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "text": {"type": "string", "description": "Reminder text."},
-                    "time_str": {"type": "string", "description": "Optional time."},
+                    "time_str": {"type": "string", "description": "Time, e.g. 14:00."},
                 },
                 "required": ["text"],
             },
@@ -141,16 +125,8 @@ TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "list_reminders",
-            "description": "List pending reminders.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "tell_joke",
-            "description": "Tell a dry, witty one-liner.",
+            "description": "Tell a witty one-liner.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -158,11 +134,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "toggle_sarcasm",
-            "description": "Turn sarcasm mode on or off.",
+            "description": "Toggle sarcasm mode.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "enabled": {"type": "boolean", "description": "True to enable sarcasm."},
+                    "enabled": {"type": "boolean", "description": "True=on."},
                 },
                 "required": ["enabled"],
             },

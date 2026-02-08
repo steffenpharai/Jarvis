@@ -86,7 +86,10 @@ def test_run_tool_unknown():
 
 @pytest.mark.unit
 def test_tool_schemas_and_registry():
-    assert len(TOOL_SCHEMAS) == 7
+    # TOOL_SCHEMAS has 4 tools (vision_analyze, create_reminder, tell_joke, toggle_sarcasm)
+    # TOOL_REGISTRY has 7 (includes get_current_time, get_jetson_status, list_reminders
+    # which are NOT in schemas because their data is already injected into context).
+    assert len(TOOL_SCHEMAS) == 4
     assert len(TOOL_REGISTRY) == 7
     for s in TOOL_SCHEMAS:
         name = s.get("function", {}).get("name")

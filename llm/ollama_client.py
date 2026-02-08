@@ -1,9 +1,12 @@
 """HTTP client to local Ollama (streaming optional).
 
-Jetson Orin Nano 8GB OOM hardening:
-  - num_ctx capped to OLLAMA_NUM_CTX_MAX (default 4096)
+Jetson Orin Nano 8GB Super — performance-optimised:
+  - num_ctx capped to OLLAMA_NUM_CTX_MAX (default 2048) to maximise GPU layer offload
+  - think=false disables Qwen3 hidden reasoning tokens (saves 10–20 s)
+  - num_predict capped to keep voice replies short
+  - 30 s request timeout (voice assistant must respond quickly)
   - On CUDA OOM: unload model, drop kernel caches, retry with smaller context
-  - Flash attention and q8_0 KV cache set via systemd env (see scripts/configure-ollama-systemd.sh)
+  - Flash attention and q8_0 KV cache set via systemd env
   - Text-based fallback parser strips JSON / tool-call leakage from small models
 """
 
@@ -136,10 +139,31 @@ def _safe_num_ctx(num_ctx: int) -> int:
     """Cap num_ctx to avoid OOM on 8GB Jetson. Use config cap if available."""
     try:
         from config import settings
-        cap = getattr(settings, "OLLAMA_NUM_CTX_MAX", 4096)
+        cap = getattr(settings, "OLLAMA_NUM_CTX_MAX", 2048)
     except Exception:
-        cap = 4096
+        cap = 2048
     return min(max(128, num_ctx), cap)
+
+
+def _get_perf_options() -> dict:
+    """Build Ollama ``options`` dict with performance settings from config."""
+    try:
+        from config import settings
+        return {
+            "num_predict": getattr(settings, "OLLAMA_NUM_PREDICT", 256),
+            "temperature": getattr(settings, "OLLAMA_TEMPERATURE", 0.6),
+        }
+    except Exception:
+        return {"num_predict": 256, "temperature": 0.6}
+
+
+def _get_think_flag() -> bool:
+    """Return the think flag (False disables Qwen3 reasoning tokens)."""
+    try:
+        from config import settings
+        return getattr(settings, "OLLAMA_THINK", False)
+    except Exception:
+        return False
 
 
 def unload_model(base_url: str, model: str) -> bool:
@@ -198,28 +222,35 @@ def chat(
     model: str,
     messages: list[dict],
     stream: bool = False,
-    num_ctx: int = 4096,
+    num_ctx: int = 2048,
 ) -> str:
     """Send chat request to Ollama; return full response content.
 
-    num_ctx is capped to OLLAMA_NUM_CTX_MAX (default 4096) to avoid OOM.
+    Performance settings applied automatically:
+      - num_ctx capped to OLLAMA_NUM_CTX_MAX (default 2048)
+      - think=false disables Qwen3 reasoning tokens
+      - num_predict limits output length
+      - 30 s timeout for voice-assistant responsiveness
     On CUDA OOM: unloads model, drops kernel caches, retries with smaller context.
     """
     num_ctx = _safe_num_ctx(num_ctx)
     url = f"{base_url.rstrip('/')}/api/chat"
+    perf = _get_perf_options()
+    think = _get_think_flag()
     for try_ctx in [num_ctx] + [c for c in _OOM_RETRY_NUM_CTX if c < num_ctx]:
         payload = {
             "model": model,
             "messages": messages,
             "stream": stream,
-            "options": {"num_ctx": try_ctx},
+            "think": think,
+            "options": {"num_ctx": try_ctx, **perf},
         }
         try:
-            r = requests.post(url, json=payload, timeout=120)
+            r = requests.post(url, json=payload, timeout=30)
             if r.status_code == 200:
                 data = r.json()
                 content = (data.get("message") or {}).get("content", "")
-                # Strip qwen3-style thinking blocks from plain chat too
+                # Strip qwen3-style thinking blocks (safety net if think wasn't honoured)
                 content = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
                 return content
             if r.status_code == 500 and _is_oom_error(r):
@@ -249,28 +280,31 @@ def chat_with_tools(
     messages: list[dict],
     tools: list[dict],
     stream: bool = False,
-    num_ctx: int = 4096,
+    num_ctx: int = 2048,
 ) -> dict:
     """Send chat request with tools; return dict with 'content' and 'tool_calls'.
 
-    If the model leaks tool calls as text (common with small models like
-    small models), ``_extract_text_tool_calls`` parses them from the content.
+    Performance: think=false, num_predict, temperature applied automatically.
+    If the model leaks tool calls as text, ``_extract_text_tool_calls`` parses them.
     Final content is cleaned via ``_clean_llm_content`` to strip JSON residue.
 
     On CUDA OOM: unloads model, drops kernel caches, retries with smaller context.
     """
     num_ctx = _safe_num_ctx(num_ctx)
     url = f"{base_url.rstrip('/')}/api/chat"
+    perf = _get_perf_options()
+    think = _get_think_flag()
     for try_ctx in [num_ctx] + [c for c in _OOM_RETRY_NUM_CTX if c < num_ctx]:
         payload = {
             "model": model,
             "messages": messages,
             "stream": stream,
+            "think": think,
             "tools": tools,
-            "options": {"num_ctx": try_ctx},
+            "options": {"num_ctx": try_ctx, **perf},
         }
         try:
-            r = requests.post(url, json=payload, timeout=120)
+            r = requests.post(url, json=payload, timeout=30)
             if r.status_code == 200:
                 data = r.json()
                 msg = data.get("message") or {}

@@ -1,7 +1,16 @@
-"""Async orchestrator: wake → STT → LLM (with context + tools) → TTS; proactive idle vision."""
+"""Async orchestrator: wake → STT → LLM (with context + tools) → TTS; proactive idle vision.
+
+Performance budget (Jetson Orin Nano 8 GB Super, MAXN_SUPER):
+  Target: user query → spoken reply in <10 s.
+  - Vision only for vision-related queries (saves ~1 s)
+  - Tool round cap = 2 (rarely need more)
+  - Summarisation is fire-and-forget (doesn't block reply)
+  - Retry once only (no multi-retry with 30 s timeout)
+"""
 
 import asyncio
 import logging
+import re as _re
 import tempfile
 import threading
 import time
@@ -19,8 +28,15 @@ from utils.reminders import format_reminders_for_llm, load_reminders
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_ROUNDS = 3
-STT_LLM_RETRIES = 2
+MAX_TOOL_ROUNDS = 2
+STT_LLM_RETRIES = 1
+
+# Keywords that indicate the user wants vision analysis
+_VISION_KEYWORDS = _re.compile(
+    r'\b(see|look|camera|watch|show|screen|desk|room|face|person|posture|what.s around'
+    r'|what do you see|who.s here|scan|detect|visual)\b',
+    _re.IGNORECASE,
+)
 
 
 def _gui_status(status: str) -> None:
@@ -91,8 +107,8 @@ def _run_one_turn_sync(
     """
     data_dir = Path(memory.get("data_dir", settings.DATA_DIR))
     reminders = load_reminders(data_dir)
-    rem_text = format_reminders_for_llm(reminders, max_items=10)
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rem_text = format_reminders_for_llm(reminders, max_items=5)
+    current_time = datetime.now().strftime("%H:%M %a %b %d")  # compact time format
     try:
         from utils.power import get_system_stats
         sys_stats = get_system_stats()
@@ -100,7 +116,7 @@ def _run_one_turn_sync(
         sys_stats = None
     system = JARVIS_ORCHESTRATOR_SYSTEM_PROMPT
     if settings.SARCASM_ENABLED:
-        system += " Sarcasm mode is on; you may be dry and slightly sarcastic."
+        system += " Sarcasm on."
 
     messages = build_messages_with_history(
         system,
@@ -251,14 +267,20 @@ async def run_orchestrator(
             if bridge is not None:
                 await bridge.send_transcript(str(query).strip(), final=True)
 
-            vision_description = await loop.run_in_executor(
-                None, run_tool, "vision_analyze", {},
-            )
+            query_text = str(query).strip()
+
+            # Only run vision if the query is vision-related (saves ~1 s)
+            if _VISION_KEYWORDS.search(query_text):
+                vision_description = await loop.run_in_executor(
+                    None, run_tool, "vision_analyze", {},
+                )
+            # else: reuse previous vision_description (or None)
+
             status_cb("Thinking (LLM)")
             for attempt in range(STT_LLM_RETRIES + 1):
                 try:
                     final = await _run_one_turn(
-                        str(query).strip(),
+                        query_text,
                         memory,
                         short_term,
                         vision_description,
@@ -281,18 +303,26 @@ async def run_orchestrator(
                 await loop.run_in_executor(None, play_wav, wav)
             else:
                 logger.warning("TTS failed for reply")
-            short_term.append({"role": "user", "content": str(query).strip()})
+            short_term.append({"role": "user", "content": query_text})
             short_term.append({"role": "assistant", "content": final})
-            await loop.run_in_executor(
-                None,
-                lambda: maybe_summarize(
-                    memory, short_term,
-                    settings.OLLAMA_BASE_URL, settings.OLLAMA_MODEL,
-                    num_ctx=settings.OLLAMA_NUM_CTX,
-                    every_n_turns=settings.SUMMARY_EVERY_N_TURNS,
-                ),
-            )
-            await loop.run_in_executor(None, save_session, memory)
+
+            # Fire-and-forget summarisation — don't block the reply pipeline.
+            # Uses a background thread so the main loop can immediately return
+            # to "Listening" state.
+            def _bg_summarize():
+                try:
+                    maybe_summarize(
+                        memory, short_term,
+                        settings.OLLAMA_BASE_URL, settings.OLLAMA_MODEL,
+                        num_ctx=min(settings.OLLAMA_NUM_CTX, 1024),
+                        every_n_turns=settings.SUMMARY_EVERY_N_TURNS,
+                    )
+                    save_session(memory)
+                except Exception as exc:
+                    logger.debug("Background summarisation failed: %s", exc)
+
+            threading.Thread(target=_bg_summarize, daemon=True).start()
+
             status_cb("Listening")
             idle_since = time.monotonic()
     finally:
