@@ -3,10 +3,12 @@
 -->
 <script lang="ts">
 	import { serverHost, connect, disconnect } from '$lib/stores/connection';
+	import { canInstall, installPwa } from '$lib/stores/pwa';
 
 	let host = $state($serverHost);
 	let showSettings = $state(false);
 	let highContrast = $state(false);
+	let installable = $derived($canInstall);
 
 	function saveHost() {
 		serverHost.set(host);
@@ -75,6 +77,17 @@
 					{highContrast ? 'Normal' : 'Hi-Con'}
 				</button>
 			</div>
+
+			{#if installable}
+				<button
+					onclick={installPwa}
+					class="w-full px-3 py-2 rounded-lg text-xs font-medium
+						bg-[var(--color-jarvis-green)]/10 border border-[var(--color-jarvis-green)]/30
+						text-[var(--color-jarvis-green)] hover:bg-[var(--color-jarvis-green)]/20 transition-colors"
+				>
+					Install App
+				</button>
+			{/if}
 		</div>
 	{/if}
 </div>

@@ -63,6 +63,47 @@ class TestRESTEndpoints:
             r = client.post("/api/reminders", json={"time_str": "14:00"})
             assert r.status_code == 400
 
+    def test_api_toggle_reminder(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("config.settings.DATA_DIR", str(tmp_path))
+        with TestClient(app) as client:
+            client.post("/api/reminders", json={"text": "Walk dog"})
+            # Toggle to done
+            r = client.patch("/api/reminders/0")
+            assert r.status_code == 200
+            assert r.json()["done"] is True
+            # Verify persisted
+            r2 = client.get("/api/reminders")
+            assert r2.json()["reminders"][0]["done"] is True
+            # Toggle back to not done
+            r3 = client.patch("/api/reminders/0")
+            assert r3.json()["done"] is False
+
+    def test_api_toggle_reminder_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("config.settings.DATA_DIR", str(tmp_path))
+        with TestClient(app) as client:
+            r = client.patch("/api/reminders/99")
+            assert r.status_code == 404
+
+    def test_api_delete_reminder(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("config.settings.DATA_DIR", str(tmp_path))
+        with TestClient(app) as client:
+            client.post("/api/reminders", json={"text": "Buy eggs"})
+            client.post("/api/reminders", json={"text": "Clean desk"})
+            # Delete first
+            r = client.delete("/api/reminders/0")
+            assert r.status_code == 200
+            assert r.json()["removed"]["text"] == "Buy eggs"
+            # Only "Clean desk" remains
+            r2 = client.get("/api/reminders")
+            assert len(r2.json()["reminders"]) == 1
+            assert r2.json()["reminders"][0]["text"] == "Clean desk"
+
+    def test_api_delete_reminder_not_found(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("config.settings.DATA_DIR", str(tmp_path))
+        with TestClient(app) as client:
+            r = client.delete("/api/reminders/99")
+            assert r.status_code == 404
+
 
 @pytest.mark.e2e
 class TestWebSocket:

@@ -46,6 +46,12 @@ export const proactiveMessage = writable<string>('');
 /** Latest error */
 export const lastError = writable<string>('');
 
+/** System stats pushed via WebSocket (type: system_status) */
+export const wsSystemStats = writable<string | null>(null);
+
+/** Server-side interim transcript (STT partial from Jetson) */
+export const serverInterimTranscript = writable<string>('');
+
 // ── WebSocket Manager ────────────────────────────────────────────────
 
 let ws: WebSocket | null = null;
@@ -57,10 +63,25 @@ const BASE_RECONNECT_DELAY = 1_000;
 /** Offline command queue – flushed on reconnect */
 const offlineQueue: string[] = [];
 
-/** Current server host (configurable) */
-export const serverHost = writable<string>(
-	typeof window !== 'undefined' ? window.location.hostname + ':8000' : 'localhost:8000'
-);
+/** Track texts sent from the PWA so we can deduplicate server echoes */
+const _recentSentTexts: Set<string> = new Set();
+
+/** Current server host (configurable, persisted in localStorage) */
+function _loadServerHost(): string {
+	if (typeof window === 'undefined') return 'localhost:8000';
+	try {
+		const saved = localStorage.getItem('jarvis_server_host');
+		if (saved) return saved;
+	} catch { /* ignore */ }
+	return window.location.hostname + ':8000';
+}
+export const serverHost = writable<string>(_loadServerHost());
+// Persist host changes
+if (typeof window !== 'undefined') {
+	serverHost.subscribe((host) => {
+		try { localStorage.setItem('jarvis_server_host', host); } catch { /* ignore */ }
+	});
+}
 
 /** Return the correct protocol (http/https) based on the page origin. */
 function getHttpProtocol(): string {
@@ -94,15 +115,23 @@ function handleMessage(event: MessageEvent) {
 				break;
 
 			case 'transcript_interim':
-				// Could show interim transcript in UI; for now skip
+				serverInterimTranscript.set((msg.text as string) || '');
 				break;
 
-			case 'transcript_final':
+		case 'transcript_final': {
+			serverInterimTranscript.set('');
+			const tfText = (msg.text as string) || '';
+			// Skip if this text was already added optimistically by sendText()
+			if (_recentSentTexts.has(tfText)) {
+				_recentSentTexts.delete(tfText);
+			} else {
 				chatHistory.update((h) => [
 					...h,
-					{ role: 'user', text: msg.text as string, timestamp: Date.now() }
+					{ role: 'user', text: tfText, timestamp: Date.now() }
 				]);
-				break;
+			}
+			break;
+		}
 
 			case 'reply':
 				chatHistory.update((h) => [
@@ -128,7 +157,7 @@ function handleMessage(event: MessageEvent) {
 				break;
 
 			case 'system_status':
-				// Handled by dashboard
+				wsSystemStats.set((msg.status as string) || null);
 				break;
 
 			case 'error':
@@ -218,6 +247,10 @@ export function sendMessage(msg: JarvisMessage) {
 /** Convenience: send user text */
 export function sendText(text: string) {
 	sendMessage({ type: 'text', text });
+	// Track so we can deduplicate the server's transcript_final echo
+	_recentSentTexts.add(text);
+	// Clean up after 10s in case the echo never arrives
+	setTimeout(() => _recentSentTexts.delete(text), 10_000);
 	// Optimistically add to history
 	chatHistory.update((h) => [...h, { role: 'user', text, timestamp: Date.now() }]);
 }
@@ -235,4 +268,36 @@ export function sendGetStatus() {
 /** Convenience: toggle sarcasm */
 export function sendSarcasmToggle(enabled: boolean) {
 	sendMessage({ type: 'sarcasm_toggle', enabled });
+}
+
+// ── Chat history localStorage persistence ────────────────────────────
+
+const CHAT_STORAGE_KEY = 'jarvis_chat_history';
+const CHAT_MAX_PERSISTED = 50;
+
+/** Hydrate chat history from localStorage on load. */
+export function hydrateChatHistory() {
+	if (typeof window === 'undefined') return;
+	try {
+		const raw = localStorage.getItem(CHAT_STORAGE_KEY);
+		if (raw) {
+			const parsed = JSON.parse(raw) as ChatMessage[];
+			if (Array.isArray(parsed) && parsed.length > 0) {
+				chatHistory.set(parsed.slice(-CHAT_MAX_PERSISTED));
+			}
+		}
+	} catch { /* ignore corrupt data */ }
+}
+
+/** Subscribe to chatHistory changes and debounce-write to localStorage. */
+let _chatDebounce: ReturnType<typeof setTimeout> | null = null;
+if (typeof window !== 'undefined') {
+	chatHistory.subscribe((h) => {
+		if (_chatDebounce) clearTimeout(_chatDebounce);
+		_chatDebounce = setTimeout(() => {
+			try {
+				localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(h.slice(-CHAT_MAX_PERSISTED)));
+			} catch { /* storage full or unavailable */ }
+		}, 500);
+	});
 }

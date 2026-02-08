@@ -122,6 +122,28 @@ async def api_create_reminder(body: dict):
     return {"ok": True, "text": text, "time_str": time_str}
 
 
+@app.patch("/api/reminders/{index}")
+async def api_toggle_reminder(index: int):
+    from utils.reminders import toggle_reminder
+    data_dir = Path(settings.DATA_DIR)
+    try:
+        done = toggle_reminder(data_dir, index)
+        return {"ok": True, "index": index, "done": done}
+    except IndexError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+
+
+@app.delete("/api/reminders/{index}")
+async def api_delete_reminder(index: int):
+    from utils.reminders import delete_reminder
+    data_dir = Path(settings.DATA_DIR)
+    try:
+        removed = delete_reminder(data_dir, index)
+        return {"ok": True, "removed": removed}
+    except IndexError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+
+
 # ── MJPEG camera stream ──────────────────────────────────────────────────
 
 @app.get("/stream")

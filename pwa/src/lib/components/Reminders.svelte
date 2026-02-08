@@ -1,5 +1,5 @@
 <!--
-  Reminders panel: list from /api/reminders, add new via POST /api/reminders.
+  Reminders panel: CRUD via /api/reminders (GET, POST, PATCH, DELETE).
 -->
 <script lang="ts">
 	import { getApiUrl } from '$lib/stores/connection';
@@ -46,6 +46,20 @@
 		}
 	}
 
+	async function toggleReminder(index: number) {
+		try {
+			const res = await fetch(getApiUrl(`/api/reminders/${index}`), { method: 'PATCH' });
+			if (res.ok) await fetchReminders();
+		} catch { /* offline */ }
+	}
+
+	async function deleteReminder(index: number) {
+		try {
+			const res = await fetch(getApiUrl(`/api/reminders/${index}`), { method: 'DELETE' });
+			if (res.ok) await fetchReminders();
+		} catch { /* offline */ }
+	}
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter') {
 			e.preventDefault();
@@ -67,14 +81,37 @@
 		<p class="text-xs text-[var(--color-jarvis-muted)]">No reminders</p>
 	{:else}
 		<ul class="space-y-1.5" aria-label="Reminders list">
-			{#each reminders as r}
+			{#each reminders as r, i}
 				<li
-					class="flex items-start gap-2 text-xs
+					class="flex items-center gap-2 text-xs group
 						{r.done ? 'text-[var(--color-jarvis-muted)] line-through' : 'text-[var(--color-jarvis-text)]'}"
 				>
-					<span class="mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0
-						{r.done ? 'bg-[var(--color-jarvis-muted)]' : 'bg-[var(--color-jarvis-cyan)]'}"></span>
-					<span>{r.text}{r.time ? ` (${r.time})` : ''}</span>
+					<button
+						onclick={() => toggleReminder(i)}
+						class="flex-shrink-0 w-4 h-4 rounded border flex items-center justify-center transition-colors
+							{r.done
+								? 'border-[var(--color-jarvis-muted)] bg-[var(--color-jarvis-muted)]/20'
+								: 'border-[var(--color-jarvis-cyan)] hover:bg-[var(--color-jarvis-cyan)]/10'}"
+						aria-label={r.done ? 'Mark undone' : 'Mark done'}
+					>
+						{#if r.done}
+							<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+								<polyline points="20 6 9 17 4 12"></polyline>
+							</svg>
+						{/if}
+					</button>
+					<span class="flex-1">{r.text}{r.time ? ` (${r.time})` : ''}</span>
+					<button
+						onclick={() => deleteReminder(i)}
+						class="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity
+							text-[var(--color-jarvis-red)] hover:text-[var(--color-jarvis-red)]"
+						aria-label="Delete reminder"
+					>
+						<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+							<line x1="18" y1="6" x2="6" y2="18"></line>
+							<line x1="6" y1="6" x2="18" y2="18"></line>
+						</svg>
+					</button>
 				</li>
 			{/each}
 		</ul>

@@ -1,15 +1,21 @@
 <!--
-  System dashboard: Jetson stats (GPU/mem/temp/power) from /api/stats or WebSocket.
-  Refreshes periodically.
+  System dashboard: Jetson stats from WebSocket (primary) or REST /api/stats (fallback).
+  WS pushes system_status on get_status command; REST polls only when WS is disconnected.
 -->
 <script lang="ts">
-	import { getApiUrl } from '$lib/stores/connection';
+	import { connectionStatus, getApiUrl, wsSystemStats } from '$lib/stores/connection';
 	import { onMount } from 'svelte';
 
-	let stats = $state<string | null>(null);
+	let restStats = $state<string | null>(null);
 	let thermal = $state<string | null>(null);
 	let loading = $state(false);
-	let intervalId: ReturnType<typeof setInterval>;
+	let intervalId: ReturnType<typeof setInterval> | null = null;
+
+	let wsStats = $derived($wsSystemStats);
+	let connStatus = $derived($connectionStatus);
+
+	// Use WS stats when available, otherwise REST
+	let stats = $derived(wsStats ?? restStats);
 
 	async function fetchStats() {
 		loading = true;
@@ -17,20 +23,34 @@
 			const res = await fetch(getApiUrl('/api/stats'));
 			if (res.ok) {
 				const data = await res.json();
-				stats = data.stats;
+				restStats = data.stats;
 				thermal = data.thermal;
 			}
 		} catch {
-			stats = null;
+			restStats = null;
 		} finally {
 			loading = false;
 		}
 	}
 
+	// Poll REST only when WS is disconnected
+	$effect(() => {
+		if (connStatus !== 'connected') {
+			if (!intervalId) {
+				fetchStats();
+				intervalId = setInterval(fetchStats, 10_000);
+			}
+		} else {
+			if (intervalId) {
+				clearInterval(intervalId);
+				intervalId = null;
+			}
+		}
+	});
+
 	onMount(() => {
-		fetchStats();
-		intervalId = setInterval(fetchStats, 10_000);
-		return () => clearInterval(intervalId);
+		fetchStats(); // initial fetch regardless
+		return () => { if (intervalId) clearInterval(intervalId); };
 	});
 </script>
 

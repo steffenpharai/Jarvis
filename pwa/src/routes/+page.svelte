@@ -10,7 +10,7 @@
 -->
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { connect, disconnect } from '$lib/stores/connection';
+	import { connect, disconnect, hydrateChatHistory } from '$lib/stores/connection';
 	import { initSpeechRecognition } from '$lib/stores/voice';
 
 	import StatusBar from '$lib/components/StatusBar.svelte';
@@ -21,21 +21,29 @@
 	import CameraStream from '$lib/components/CameraStream.svelte';
 	import Dashboard from '$lib/components/Dashboard.svelte';
 	import Reminders from '$lib/components/Reminders.svelte';
+	import Toast from '$lib/components/Toast.svelte';
 
 	let isFolded = $state(true);
+	let isMidSize = $state(false);
 
 	onMount(() => {
+		// Hydrate persisted chat before connecting
+		hydrateChatHistory();
+
 		// Connect to Jarvis backend
 		connect();
 		initSpeechRecognition();
 
 		// Fold detection via width (primary) and Device Posture API (progressive enhancement)
-		const mq = window.matchMedia('(min-width: 900px)');
-		const updateFold = () => {
-			isFolded = !mq.matches;
+		const mqLarge = window.matchMedia('(min-width: 900px)');
+		const mqMid = window.matchMedia('(min-width: 600px) and (max-width: 899px)');
+		const updateLayout = () => {
+			isFolded = !mqLarge.matches && !mqMid.matches;
+			isMidSize = mqMid.matches;
 		};
-		updateFold();
-		mq.addEventListener('change', updateFold);
+		updateLayout();
+		mqLarge.addEventListener('change', updateLayout);
+		mqMid.addEventListener('change', updateLayout);
 
 		// Device Posture API (experimental, Chrome)
 		if ('devicePosture' in navigator) {
@@ -51,7 +59,8 @@
 
 		return () => {
 			disconnect();
-			mq.removeEventListener('change', updateFold);
+			mqLarge.removeEventListener('change', updateLayout);
+			mqMid.removeEventListener('change', updateLayout);
 		};
 	});
 </script>
@@ -59,6 +68,8 @@
 <svelte:head>
 	<title>Jarvis</title>
 </svelte:head>
+
+<Toast />
 
 <div class="h-full flex flex-col" style="container-type: inline-size;">
 	<!-- Top bar -->
@@ -88,6 +99,26 @@
 			<!-- Controls (fixed at bottom) -->
 			<VoiceControls />
 		</div>
+	{:else if isMidSize}
+		<!-- ═══ MID-SIZE LAYOUT (600–899px) ═══ -->
+		<div class="flex-1 grid grid-cols-[1fr_1fr] gap-0 min-h-0">
+			<!-- Left pane: orb + chat + controls -->
+			<div class="flex flex-col min-h-0 border-r border-[var(--color-jarvis-border)]">
+				<div class="flex items-center justify-center py-3 border-b border-[var(--color-jarvis-border)]">
+					<ListeningOrb />
+				</div>
+				<div class="flex-1 min-h-0">
+					<ChatPanel />
+				</div>
+				<VoiceControls />
+			</div>
+
+			<!-- Right pane: camera only (compact) -->
+			<div class="flex flex-col min-h-0 overflow-y-auto p-3 gap-3">
+				<CameraStream />
+				<Dashboard />
+			</div>
+		</div>
 	{:else}
 		<!-- ═══ UNFOLDED / INNER LAYOUT (8"+) ═══ -->
 		<div class="flex-1 grid grid-cols-[2fr_3fr] gap-0 min-h-0">
@@ -116,11 +147,6 @@
 </div>
 
 <style>
-	/* Container query overrides for intermediate sizes */
-	@container (min-width: 600px) and (max-width: 899px) {
-		/* Mid-size: show a compact two-column */
-	}
-
 	/* Device Posture API media query (progressive enhancement) */
 	@media (device-posture: folded) {
 		/* Force single-column when physically folded */
