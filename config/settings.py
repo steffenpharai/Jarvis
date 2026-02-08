@@ -6,15 +6,29 @@ import os
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VENV_ROOT = os.path.join(PROJECT_ROOT, "venv")
 
-# RAM budget (GiB) – keep under 7.5 to avoid swap on microSD
+# RAM budget (GiB) – keep under 7.5 to avoid swap on microSD.
+# With Cursor IDE running, Orin Nano 8GB typically has ~2.5–3 GiB available (Cursor + Chrome
+# + GNOME use ~2–3 GiB). Ollama + vision must stay within that; hence OLLAMA_NUM_CTX_MAX = 512.
 RAM_BUDGET_GIB = 7.5
 
 # Ollama – local install, GPU. Default llama3.2:1b (8GB-friendly). Override with OLLAMA_MODEL.
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2:1b")
 OLLAMA_FALLBACK_MODEL = os.environ.get("OLLAMA_FALLBACK_MODEL", "llama3.2:1b")  # same or smaller on OOM
-# Context size (KV cache). Lower = less GPU RAM; 1024 fits 8GB Jetson when model loads.
-OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "1024"))
+# Context size (KV cache). 512 avoids OOM when Cursor/desktop are running; increase only with headroom.
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "512"))
+# Hard cap so we never exceed this (prevents OOM)
+OLLAMA_NUM_CTX_MAX = 512
+# Server-side memory settings (must also match systemd env via scripts/configure-ollama-systemd.sh):
+#   OLLAMA_FLASH_ATTENTION=1       – flash attention (less KV cache memory)
+#   OLLAMA_KV_CACHE_TYPE=q8_0      – quantize KV cache to 8-bit (halves vs f16)
+#   OLLAMA_NUM_PARALLEL=1          – single concurrent request (no duplicate KV caches)
+#   OLLAMA_MAX_LOADED_MODELS=1     – only one model in GPU at a time
+#   OLLAMA_GPU_OVERHEAD=500000000  – reserve ~500 MB for X11/GNOME/Cursor
+#   OLLAMA_KEEP_ALIVE=5m           – unload model after 5 min idle
+# These are set in systemd, not in-app, but documented here for reference.
+OLLAMA_FLASH_ATTENTION = os.environ.get("OLLAMA_FLASH_ATTENTION", "1") == "1"
+OLLAMA_KV_CACHE_TYPE = os.environ.get("OLLAMA_KV_CACHE_TYPE", "q8_0")
 
 # Voice
 WAKE_WORD_MODEL = "jarvis"  # openWakeWord / Porcupine

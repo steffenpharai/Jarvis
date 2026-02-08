@@ -23,3 +23,4 @@ Only ask before running when the action is truly ambiguous or destructive (e.g. 
 - **Full automation**: Complete full flows (config → code → tests → **run commands**). Validation is not optional.
 - **E2E first**: For each phase (voice loop, LLM, vision), add or extend E2E tests in `tests/e2e/`. Prefer pytest with markers (e.g. `@pytest.mark.e2e`) and run unit vs e2e separately when needed.
 - **2026+ Jetson Orin Nano 8GB**: Target JetPack 6.x, L4T R36.x; TensorRT .engine built on-device; RAM budget <7.5 GB; MAXN_SUPER + jetson_clocks for perf. Use Ultralytics YOLOv8n → engine, INT8/FP16 when appropriate; prefer native Python 3.10 venv over Docker unless specified.
+- **Engine files**: Never delete or stop tracking the TensorRT engine files we created (e.g. `models/yoloe26n.engine`, `models/yolov8n.engine`). Do not add `*.engine` or these paths to `.gitignore`. Keep them in the repo and in scripts/docs.

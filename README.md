@@ -203,20 +203,46 @@ Stop with `Ctrl+C`.
 
 With `--orchestrator`, Jarvis runs an async loop with **short- and long-term context**, **tool calling** (vision, Jetson status, time, reminders, jokes, sarcasm toggle), and **proactive** idle checks (e.g. vision every ~5 minutes). Session summary and reminders are stored under `data/`. Use `--no-vision` to disable the camera.
 
-### Ollama configuration (inspect and optimize)
+### Ollama memory optimization (8GB Jetson)
 
-Context size and other limits can be set **server-side** (systemd). To inspect and tune for 8GB Jetson:
+On Jetson Orin Nano, GPU and CPU share the same 7.6 GiB RAM. With Cursor/Chrome/GNOME running, only ~1.6 GiB may be truly **free** (the rest is buff/cache). CUDA's `cudaMalloc` (via the nvmap kernel driver) needs actual free memory -- it cannot reclaim buff/cache automatically. This causes OOM even when `MemAvailable` looks ample.
+
+The project includes a multi-layer OOM prevention stack:
+
+| Layer | Setting | Effect |
+|-------|---------|--------|
+| **systemd** | `OLLAMA_FLASH_ATTENTION=1` | Flash attention (dramatically less KV cache memory) |
+| **systemd** | `OLLAMA_KV_CACHE_TYPE=q8_0` | 8-bit KV cache (halves memory vs f16) |
+| **systemd** | `OLLAMA_NUM_PARALLEL=1` | No duplicate KV caches |
+| **systemd** | `OLLAMA_MAX_LOADED_MODELS=1` | Only one model in GPU at a time |
+| **systemd** | `OLLAMA_CONTEXT_LENGTH=512` | Default context length for small KV cache |
+| **systemd** | `OLLAMA_GPU_OVERHEAD=500000000` | Reserve ~500 MB for X11/GNOME/Cursor |
+| **systemd** | `OLLAMA_KEEP_ALIVE=5m` | Unload model after 5 min idle |
+| **Python** | `OLLAMA_NUM_CTX=512` / `OLLAMA_NUM_CTX_MAX=512` | Cap context per request |
+| **Python** | OOM recovery | On CUDA OOM: unload model + drop kernel caches + retry with smaller context |
+
+**Apply all settings at once:**
 
 ```bash
-# Inspect effective env and override files (use sudo for systemd)
-sudo scripts/inspect-ollama-config.sh
+# Configure systemd (writes /etc/systemd/system/ollama.service.d/gpu.conf)
+sudo bash scripts/configure-ollama-systemd.sh
 
-# Configure systemd: GPU + optional OLLAMA_NUM_CTX / OLLAMA_KEEP_ALIVE
-OLLAMA_NUM_CTX=1024 OLLAMA_KEEP_ALIVE=-1 sudo scripts/configure-ollama-systemd.sh
+# Drop kernel caches to free memory for CUDA
+sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
+
+# Reload and restart
 sudo systemctl daemon-reload && sudo systemctl restart ollama
+
+# Verify model loads (should show 100% GPU, flash_attn enabled)
+ollama run llama3.2:1b 'hello' --verbose
 ```
 
-Then run `sudo scripts/inspect-ollama-config.sh` again to verify. Keep app-side `OLLAMA_NUM_CTX` in `config/settings.py` (or env) consistent with the server.
+**Inspect current config and memory:**
+
+```bash
+sudo bash scripts/inspect-ollama-config.sh
+bash scripts/inspect-jetson-memory.sh
+```
 
 ## Options
 
@@ -247,7 +273,7 @@ Then run `sudo scripts/inspect-ollama-config.sh` again to verify. Keep app-side 
 
 ## Troubleshooting
 
-- **OOM / swap**: Use a smaller Ollama model (e.g. 1.5B), disable vision, or reduce camera resolution. Keep total RAM under 7.5 GB.
+- **Ollama OOM / cudaMalloc failed**: On Jetson 8GB, `cudaMalloc` needs actual **free** RAM (not just `MemAvailable`). Run `sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'` before model load to reclaim buff/cache. Apply all OOM-prevention settings with `sudo bash scripts/configure-ollama-systemd.sh`. The Python client also auto-recovers: on OOM it unloads the model, drops caches, and retries with smaller context. Inspect memory: `bash scripts/inspect-jetson-memory.sh`.
 - **Bluetooth mic not working**: Prefer HFP profile for the buds or use a USB microphone and keep A2DP for output.
 - **Piper not found**: Install Piper and ensure the `piper` binary and voice model are on PATH or configured in `TTS_VOICE`.
 - **Ollama connection refused**: Start Ollama with `ollama serve` (or equivalent) and check `OLLAMA_BASE_URL`.
@@ -269,4 +295,10 @@ Before treating the app as production-ready, ensure:
    python main.py --one-shot "Say hello."
    python main.py --e2e --no-vision   # full loop (wake → STT → LLM → TTS)
    ```
-4. **Optional**: For vision, build YOLOE engine and run `python main.py --e2e` (with camera). For headless/service use, consider `sudo scripts/configure-ollama-systemd.sh` and `sudo systemctl enable --now ollama`.
+4. **Ollama systemd** (recommended): Apply memory-optimized settings for 8GB Jetson:
+   ```bash
+   sudo bash scripts/configure-ollama-systemd.sh
+   sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
+   sudo systemctl daemon-reload && sudo systemctl restart ollama
+   ```
+5. **Optional**: For vision, build YOLOE engine and run `python main.py --e2e` (with camera).

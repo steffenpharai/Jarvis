@@ -1,7 +1,15 @@
-"""HTTP client to local Ollama (streaming optional)."""
+"""HTTP client to local Ollama (streaming optional).
+
+Jetson Orin Nano 8GB OOM hardening:
+  - num_ctx capped to OLLAMA_NUM_CTX_MAX (default 512)
+  - On CUDA OOM: unload model, drop kernel caches, retry with smaller context
+  - Flash attention and q8_0 KV cache set via systemd env (see scripts/configure-ollama-systemd.sh)
+"""
 
 import json
 import logging
+import subprocess
+import time
 
 import requests
 
@@ -26,7 +34,7 @@ def _parse_tool_calls(raw: list) -> list[dict]:
 
 
 def _is_oom_error(response) -> bool:
-    """True if response body indicates GPU OOM / allocation failure."""
+    """True if response body indicates GPU OOM / CUDA allocation failure."""
     try:
         text = (response.text or "").lower()
         return (
@@ -34,9 +42,79 @@ def _is_oom_error(response) -> bool:
             or "buffer" in text
             or "failed to load model" in text
             or "out of memory" in text
+            or "nvmapmemalloc" in text
         )
     except Exception:
         return False
+
+
+def _is_oom_exception(exc: Exception) -> bool:
+    """True if a requests exception wraps an OOM error."""
+    if hasattr(exc, "response") and exc.response is not None:
+        return _is_oom_error(exc.response)
+    text = str(exc).lower()
+    return "out of memory" in text or "allocate" in text or "failed to load" in text
+
+
+def _safe_num_ctx(num_ctx: int) -> int:
+    """Cap num_ctx to avoid OOM on 8GB Jetson. Use config cap if available."""
+    try:
+        from config import settings
+        cap = getattr(settings, "OLLAMA_NUM_CTX_MAX", 512)
+    except Exception:
+        cap = 512
+    return min(max(128, num_ctx), cap)
+
+
+def unload_model(base_url: str, model: str) -> bool:
+    """Ask Ollama to immediately unload a model from GPU (set keep_alive=0).
+
+    On Jetson unified memory this frees CUDA memory back to the system.
+    """
+    url = f"{base_url.rstrip('/')}/api/chat"
+    try:
+        r = requests.post(
+            url,
+            json={"model": model, "messages": [], "keep_alive": 0},
+            timeout=30,
+        )
+        if r.status_code == 200:
+            logger.info("Unloaded model %s from GPU.", model)
+            return True
+        logger.warning("Unload model %s returned status %s.", model, r.status_code)
+        return False
+    except Exception as e:
+        logger.warning("Unload model %s failed: %s", model, e)
+        return False
+
+
+def _drop_caches() -> None:
+    """Drop kernel page/dentry/inode caches (needs sudo).
+
+    On Jetson Orin Nano, buff/cache can hold ~3 GiB that nvmap/cudaMalloc
+    cannot reclaim automatically. Dropping caches before model load retries
+    makes that memory available to CUDA.
+    """
+    try:
+        subprocess.run(
+            ["sudo", "-n", "sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"],
+            timeout=5,
+            capture_output=True,
+        )
+        logger.info("Dropped kernel caches to free memory for CUDA.")
+    except Exception as e:
+        logger.debug("drop_caches skipped (needs passwordless sudo): %s", e)
+
+
+def _recover_from_oom(base_url: str, model: str) -> None:
+    """Best-effort OOM recovery: unload model, drop caches, brief pause."""
+    unload_model(base_url, model)
+    _drop_caches()
+    time.sleep(1)
+
+
+# OOM retry sequence: try smaller context until one works
+_OOM_RETRY_NUM_CTX = [512, 256, 128]
 
 
 def chat(
@@ -44,48 +122,46 @@ def chat(
     model: str,
     messages: list[dict],
     stream: bool = False,
-    num_ctx: int = 1024,
+    num_ctx: int = 512,
 ) -> str:
     """Send chat request to Ollama; return full response content.
-    num_ctx limits context size to reduce GPU memory (KV cache) on 8GB Jetson.
-    On 500 with OOM, retries once with num_ctx=512."""
+
+    num_ctx is capped to OLLAMA_NUM_CTX_MAX (default 512) to avoid OOM.
+    On CUDA OOM: unloads model, drops kernel caches, retries with smaller context.
+    """
+    num_ctx = _safe_num_ctx(num_ctx)
     url = f"{base_url.rstrip('/')}/api/chat"
-    payload = {
-        "model": model,
-        "messages": messages,
-        "stream": stream,
-        "options": {"num_ctx": num_ctx},
-    }
-    try:
-        r = requests.post(url, json=payload, timeout=120)
-        if r.status_code == 200:
-            data = r.json()
-            return (data.get("message") or {}).get("content", "")
-        if r.status_code == 500 and _is_oom_error(r) and num_ctx > 512:
-            logger.warning(
-                "Ollama GPU OOM (num_ctx=%s). Retrying with num_ctx=512.",
-                num_ctx,
-            )
-            payload["options"]["num_ctx"] = 512
-            r2 = requests.post(url, json=payload, timeout=120)
-            if r2.status_code == 200:
-                data = r2.json()
+    for try_ctx in [num_ctx] + [c for c in _OOM_RETRY_NUM_CTX if c < num_ctx]:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": stream,
+            "options": {"num_ctx": try_ctx},
+        }
+        try:
+            r = requests.post(url, json=payload, timeout=120)
+            if r.status_code == 200:
+                data = r.json()
                 return (data.get("message") or {}).get("content", "")
-            logger.warning(
-                "Ollama still failed after reducing context. Free GPU: sudo scripts/prepare-ollama-gpu.sh; restart ollama; or use smaller model (e.g. OLLAMA_MODEL=llama3.2:1b)."
-            )
+            if r.status_code == 500 and _is_oom_error(r):
+                logger.warning(
+                    "Ollama GPU OOM (num_ctx=%s). Recovering and retrying.",
+                    try_ctx,
+                )
+                _recover_from_oom(base_url, model)
+                continue
+            r.raise_for_status()
             return ""
-        r.raise_for_status()
-        return ""
-    except requests.RequestException as e:
-        err_msg = str(e)
-        if hasattr(e, "response") and e.response is not None and _is_oom_error(e.response):
-            logger.warning(
-                "Ollama GPU OOM. Free memory: sudo scripts/prepare-ollama-gpu.sh; then restart ollama. Or use smaller model."
-            )
-        else:
-            logger.warning("Ollama request failed: %s", err_msg)
-        return ""
+        except requests.RequestException as e:
+            if _is_oom_exception(e):
+                logger.warning("Ollama GPU OOM (num_ctx=%s). Recovering and retrying.", try_ctx)
+                _recover_from_oom(base_url, model)
+                continue
+            logger.warning("Ollama request failed: %s", e)
+            return ""
+    return ""
+
+
 
 
 def chat_with_tools(
@@ -94,40 +170,47 @@ def chat_with_tools(
     messages: list[dict],
     tools: list[dict],
     stream: bool = False,
-    num_ctx: int = 1024,
+    num_ctx: int = 512,
 ) -> dict:
-    """Send chat request with tools; return dict with 'content' (str) and 'tool_calls' (list of {name, arguments})."""
+    """Send chat request with tools; return dict with 'content' and 'tool_calls'.
+
+    On CUDA OOM: unloads model, drops kernel caches, retries with smaller context.
+    """
+    num_ctx = _safe_num_ctx(num_ctx)
     url = f"{base_url.rstrip('/')}/api/chat"
-    payload = {
-        "model": model,
-        "messages": messages,
-        "stream": stream,
-        "tools": tools,
-        "options": {"num_ctx": num_ctx},
-    }
-    try:
-        r = requests.post(url, json=payload, timeout=120)
-        if r.status_code != 200:
-            if r.status_code == 500 and _is_oom_error(r) and num_ctx > 512:
-                payload["options"]["num_ctx"] = 512
-                r2 = requests.post(url, json=payload, timeout=120)
-                if r2.status_code == 200:
-                    data = r2.json()
-                    msg = data.get("message") or {}
-                    return {
-                        "content": msg.get("content", ""),
-                        "tool_calls": _parse_tool_calls(msg.get("tool_calls") or []),
-                    }
-            return {"content": "", "tool_calls": []}
-        data = r.json()
-        msg = data.get("message") or {}
-        return {
-            "content": (msg.get("content") or "").strip(),
-            "tool_calls": _parse_tool_calls(msg.get("tool_calls") or []),
+    for try_ctx in [num_ctx] + [c for c in _OOM_RETRY_NUM_CTX if c < num_ctx]:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": stream,
+            "tools": tools,
+            "options": {"num_ctx": try_ctx},
         }
-    except requests.RequestException as e:
-        logger.warning("Ollama chat_with_tools failed: %s", e)
-        return {"content": "", "tool_calls": []}
+        try:
+            r = requests.post(url, json=payload, timeout=120)
+            if r.status_code == 200:
+                data = r.json()
+                msg = data.get("message") or {}
+                return {
+                    "content": (msg.get("content") or "").strip(),
+                    "tool_calls": _parse_tool_calls(msg.get("tool_calls") or []),
+                }
+            if r.status_code == 500 and _is_oom_error(r):
+                logger.warning(
+                    "Ollama chat_with_tools OOM (num_ctx=%s). Recovering and retrying.",
+                    try_ctx,
+                )
+                _recover_from_oom(base_url, model)
+                continue
+            return {"content": "", "tool_calls": []}
+        except requests.RequestException as e:
+            if _is_oom_exception(e):
+                logger.warning("Ollama chat_with_tools OOM (num_ctx=%s). Recovering and retrying.", try_ctx)
+                _recover_from_oom(base_url, model)
+                continue
+            logger.warning("Ollama chat_with_tools failed: %s", e)
+            return {"content": "", "tool_calls": []}
+    return {"content": "", "tool_calls": []}
 
 
 def is_ollama_available(base_url: str = "http://127.0.0.1:11434") -> bool:
