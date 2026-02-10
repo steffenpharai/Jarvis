@@ -14,7 +14,8 @@ This guide walks through the complete setup on a fresh Jetson Orin Nano Super wi
 8. [Bluetooth Audio](#bluetooth-audio)
 9. [PWA Frontend](#pwa-frontend)
 10. [First Run](#first-run)
-11. [Verification](#verification)
+11. [Auto-Start on Boot](#auto-start-on-boot)
+12. [Verification](#verification)
 
 ---
 
@@ -190,6 +191,106 @@ python main.py --serve
 ```
 
 Open `http://<jetson-ip>:8000` from any device on your network.
+
+## Auto-Start on Boot
+
+JARVIS can start automatically when the Jetson reboots, so you can access the UI from a phone (e.g. Pixel) on the same LAN without SSH-ing in.
+
+### Boot chain
+
+Three systemd services run in order:
+
+| Order | Service | Purpose |
+|:---|:---|:---|
+| 1 | `ollama.service` | LLM inference server (installed by `curl \| sh`) |
+| 2 | `jetson-clocks.service` | Locks CPU/GPU/EMC at max clocks for MAXN_SUPER |
+| 3 | `jarvis.service` | FastAPI + Orchestrator + Vision pipeline on port 8000 |
+
+### Install the services
+
+```bash
+# 1. Ollama is already a systemd service after install — just ensure it's enabled:
+sudo systemctl enable ollama
+
+# 2. jetson_clocks at boot (locks max performance clocks):
+sudo tee /etc/systemd/system/jetson-clocks.service > /dev/null << 'EOF'
+[Unit]
+Description=Apply jetson_clocks for MAXN_SUPER performance
+After=nvpmodel.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/jetson_clocks
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable jetson-clocks
+
+# 3. JARVIS service:
+sudo tee /etc/systemd/system/jarvis.service > /dev/null << 'SVCEOF'
+[Unit]
+Description=J.A.R.V.I.S. — AI Assistant (FastAPI + Orchestrator + Vision)
+After=network-online.target ollama.service jetson-clocks.service
+Wants=network-online.target ollama.service jetson-clocks.service
+
+[Service]
+Type=simple
+User=jarvis
+Group=jarvis
+WorkingDirectory=/home/jarvis/Jarvis
+ExecStartPre=/bin/bash /home/jarvis/Jarvis/scripts/jarvis-boot.sh
+ExecStart=/home/jarvis/Jarvis/venv/bin/python main.py --serve
+ExecStop=/bin/kill -SIGINT $MAINPID
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=10
+Environment="PATH=/home/jarvis/Jarvis/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="OLLAMA_BASE_URL=http://127.0.0.1:11434"
+Environment="OLLAMA_MODEL=qwen3:1.7b"
+Environment="OLLAMA_NUM_CTX=8192"
+Environment="JARVIS_SERVE_HOST=0.0.0.0"
+Environment="JARVIS_SERVE_PORT=8000"
+Environment="JARVIS_DEPTH_ENABLED=0"
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jarvis
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable jarvis
+```
+
+The pre-flight script (`scripts/jarvis-boot.sh`) waits up to 60 s for Ollama to become reachable, then verifies the LLM model is pulled, the camera device exists, and the YOLOE engine is present.
+
+### Managing the service
+
+```bash
+# Start / stop / restart
+sudo systemctl start jarvis
+sudo systemctl stop jarvis
+sudo systemctl restart jarvis   # after code changes
+
+# Live logs
+sudo journalctl -u jarvis -f
+
+# Status
+sudo systemctl status jarvis
+```
+
+### Accessing from your phone
+
+After reboot, open `http://<jetson-ip>:8000` in Chrome on your phone (e.g. `http://192.168.86.50:8000`). The PWA can be installed to the home screen for an app-like experience.
 
 ## Verification
 
