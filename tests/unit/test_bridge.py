@@ -103,13 +103,35 @@ async def test_send_helpers(bridge_instance):
     await bridge_instance.send_hologram({"point_cloud": [], "tracked_objects": []})
     await bridge_instance.send_vitals({"fatigue": "alert", "posture": "good"})
     await bridge_instance.send_threat({"level": "clear", "score": 0.0, "summary": ""})
-    assert len(ws.sent) == 10
+    await bridge_instance.send_thinking_step("reasoning", "Analyzing and reasoning...")
+    assert len(ws.sent) == 11
     types = [m["type"] for m in ws.sent]
     assert types == [
         "status", "reply", "transcript_final",
         "detections", "error", "wake", "proactive",
-        "hologram", "vitals", "threat",
+        "hologram", "vitals", "threat", "thinking_step",
     ]
+
+
+@pytest.mark.asyncio
+async def test_thinking_step_messages(bridge_instance):
+    """Thinking steps broadcast the correct step/detail fields."""
+    ws = FakeWebSocket()
+    bridge_instance.add_client(ws)
+
+    await bridge_instance.send_thinking_step("heard", "Processing your words...")
+    await bridge_instance.send_thinking_step("context", "Building context from memory...")
+    await bridge_instance.send_thinking_step("reasoning", "Analyzing and reasoning...")
+    await bridge_instance.send_thinking_step("done")
+
+    assert len(ws.sent) == 4
+    assert all(m["type"] == "thinking_step" for m in ws.sent)
+    assert ws.sent[0]["step"] == "heard"
+    assert ws.sent[0]["detail"] == "Processing your words..."
+    assert ws.sent[1]["step"] == "context"
+    assert ws.sent[2]["step"] == "reasoning"
+    assert ws.sent[3]["step"] == "done"
+    assert ws.sent[3]["detail"] == ""
 
 
 @pytest.mark.asyncio

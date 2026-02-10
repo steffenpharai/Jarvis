@@ -119,6 +119,26 @@ class Bridge:
     async def send_threat(self, data: dict) -> None:
         await self.broadcast({"type": "threat", "data": data})
 
+    async def send_thinking_step(self, step: str, detail: str = "") -> None:
+        """Broadcast an orchestration thinking step to all clients.
+
+        The PWA renders these as a live activity feed so the user always
+        sees what Jarvis is doing ("What is Jarvis thinking?").
+        """
+        await self.broadcast({
+            "type": "thinking_step",
+            "step": step,
+            "detail": detail,
+        })
+
+    def send_thinking_step_threadsafe(self, step: str, detail: str = "") -> None:
+        """Thread-safe variant for the wake/STT thread."""
+        self.broadcast_threadsafe({
+            "type": "thinking_step",
+            "step": step,
+            "detail": detail,
+        })
+
     # ------------------------------------------------------------------
     # Inbound: client → orchestrator
     # ------------------------------------------------------------------

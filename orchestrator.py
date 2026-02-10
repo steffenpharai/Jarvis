@@ -149,6 +149,7 @@ def _run_one_turn_sync(
     vision_description: str | None,
     vitals_text: str | None = None,
     threat_text: str | None = None,
+    bridge_ref: object | None = None,
 ) -> str:
     """Build messages, ReAct loop with tools, return final answer.
 
@@ -207,7 +208,10 @@ def _run_one_turn_sync(
         for tc in tool_calls:
             name = tc.get("name", "")
             args = tc.get("arguments") or {}
+            # Broadcast tool execution step (thread-safe from executor)
+            _thinking(bridge_ref, "tool", f"Running {name}...")
             result = run_tool(name, args)
+            _thinking(bridge_ref, "tool_done", f"Completed {name}")
             messages.append({"role": "tool", "tool_name": name, "content": result})
 
     if not final_answer:
@@ -222,13 +226,26 @@ async def _run_one_turn(
     vision_description: str | None,
     vitals_text: str | None = None,
     threat_text: str | None = None,
+    bridge_ref: object | None = None,
 ) -> str:
     """Async wrapper: runs the blocking LLM ReAct loop in an executor thread."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None, _run_one_turn_sync, query, memory, short_term,
-        vision_description, vitals_text, threat_text,
+        vision_description, vitals_text, threat_text, bridge_ref,
     )
+
+
+def _thinking(bridge: object | None, step: str, detail: str = "") -> None:
+    """Broadcast a thinking step to PWA clients (fire-and-forget)."""
+    if bridge is not None and hasattr(bridge, "send_thinking_step_threadsafe"):
+        bridge.send_thinking_step_threadsafe(step, detail)
+
+
+async def _thinking_async(bridge: object | None, step: str, detail: str = "") -> None:
+    """Broadcast a thinking step from an async context."""
+    if bridge is not None and hasattr(bridge, "send_thinking_step"):
+        await bridge.send_thinking_step(step, detail)
 
 
 async def run_orchestrator(
@@ -367,8 +384,11 @@ async def run_orchestrator(
 
             query_text = str(query).strip()
 
+            await _thinking_async(bridge, "heard", "Processing your words...")
+
             # Only run vision if the query is vision-related (saves ~1 s)
             if _VISION_KEYWORDS.search(query_text):
+                await _thinking_async(bridge, "vision", "Scanning the environment...")
                 try:
                     from tools import vision_analyze_full
 
@@ -384,9 +404,12 @@ async def run_orchestrator(
                     )
                     vitals_text = None
                     threat_text = None
+                await _thinking_async(bridge, "vision_done", "Environment analyzed")
             # else: reuse previous vision_description (or None)
 
+            await _thinking_async(bridge, "context", "Building context from memory...")
             status_cb("Thinking (LLM)")
+            await _thinking_async(bridge, "reasoning", "Analyzing and reasoning...")
             for attempt in range(STT_LLM_RETRIES + 1):
                 try:
                     final = await _run_one_turn(
@@ -396,6 +419,7 @@ async def run_orchestrator(
                         vision_description,
                         vitals_text=vitals_text,
                         threat_text=threat_text,
+                        bridge_ref=bridge,
                     )
                     break
                 except Exception as e:
@@ -403,7 +427,9 @@ async def run_orchestrator(
                     if attempt >= STT_LLM_RETRIES:
                         final = "A momentary glitch in my systems, sir. Shall we try that again?"
                     else:
+                        await _thinking_async(bridge, "retry", "Retrying reasoning...")
                         final = "Retrying."
+            await _thinking_async(bridge, "speaking", "Formulating response...")
             status_cb("Speaking")
             # Broadcast reply to PWA clients
             if bridge is not None:
@@ -435,6 +461,7 @@ async def run_orchestrator(
 
             threading.Thread(target=_bg_summarize, daemon=True).start()
 
+            await _thinking_async(bridge, "done", "Ready")
             status_cb("Listening")
             idle_since = time.monotonic()
     finally:

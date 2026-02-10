@@ -52,6 +52,17 @@ export const wsSystemStats = writable<string | null>(null);
 /** Server-side interim transcript (STT partial from Jetson) */
 export const serverInterimTranscript = writable<string>('');
 
+/** Orchestration thinking steps – live feed of what Jarvis is doing */
+export interface ThinkingStep {
+	step: string;   // e.g. 'heard', 'vision', 'context', 'reasoning', 'tool', 'speaking', 'done'
+	detail: string; // human-readable description
+	timestamp: number;
+}
+export const thinkingSteps = writable<ThinkingStep[]>([]);
+
+/** Streaming reply – used for typewriter effect. Null when not streaming. */
+export const streamingReply = writable<string | null>(null);
+
 /** Tracked object from enriched vision pipeline */
 export interface TrackedObjectData {
 	track_id: number;
@@ -93,6 +104,65 @@ export interface ThreatData {
 	summary: string;
 }
 export const threatData = writable<ThreatData | null>(null);
+
+// ── Typewriter effect ────────────────────────────────────────────────
+
+let _typewriterTimer: ReturnType<typeof setTimeout> | null = null;
+let _typewriterFullText: string | null = null;
+
+function _commitPendingTypewriter() {
+	// If a typewriter is in progress, commit its full text to history immediately
+	if (_typewriterTimer) {
+		clearTimeout(_typewriterTimer);
+		_typewriterTimer = null;
+	}
+	if (_typewriterFullText !== null) {
+		const text = _typewriterFullText;
+		_typewriterFullText = null;
+		streamingReply.set(null);
+		chatHistory.update((h) => [
+			...h,
+			{ role: 'assistant', text, timestamp: Date.now() },
+		]);
+	}
+}
+
+function _typewriterReply(fullText: string) {
+	// Commit any in-progress typewriter first (prevents lost messages)
+	_commitPendingTypewriter();
+
+	// Clear thinking steps when reply starts
+	thinkingSteps.set([]);
+
+	_typewriterFullText = fullText;
+	const chars = [...fullText];
+	let index = 0;
+	// Chars per tick: scale speed with message length for consistent feel
+	const charsPerTick = Math.max(1, Math.ceil(chars.length / 80));
+	const tickMs = 18;
+
+	streamingReply.set('');
+
+	function tick() {
+		if (index >= chars.length) {
+			// Done streaming: move to permanent history
+			_typewriterFullText = null;
+			streamingReply.set(null);
+			chatHistory.update((h) => [
+				...h,
+				{ role: 'assistant', text: fullText, timestamp: Date.now() },
+			]);
+			_typewriterTimer = null;
+			return;
+		}
+		const end = Math.min(index + charsPerTick, chars.length);
+		const partial = chars.slice(0, end).join('');
+		streamingReply.set(partial);
+		index = end;
+		_typewriterTimer = setTimeout(tick, tickMs);
+	}
+	tick();
+}
 
 // ── WebSocket Manager ────────────────────────────────────────────────
 
@@ -156,30 +226,44 @@ function handleMessage(event: MessageEvent) {
 				setTimeout(() => wakeDetected.set(false), 3000);
 				break;
 
-			case 'transcript_interim':
+		case 'transcript_interim':
 				serverInterimTranscript.set((msg.text as string) || '');
 				break;
 
-		case 'transcript_final': {
-			serverInterimTranscript.set('');
-			const tfText = (msg.text as string) || '';
-			// Skip if this text was already added optimistically by sendText()
-			if (_recentSentTexts.has(tfText)) {
-				_recentSentTexts.delete(tfText);
-			} else {
-				chatHistory.update((h) => [
-					...h,
-					{ role: 'user', text: tfText, timestamp: Date.now() }
-				]);
+			case 'transcript_final': {
+				serverInterimTranscript.set('');
+				const tfText = (msg.text as string) || '';
+				// Skip if this text was already added optimistically by sendText()
+				if (_recentSentTexts.has(tfText)) {
+					_recentSentTexts.delete(tfText);
+				} else {
+					chatHistory.update((h) => [
+						...h,
+						{ role: 'user', text: tfText, timestamp: Date.now() }
+					]);
+				}
+				break;
 			}
-			break;
-		}
+
+			case 'thinking_step': {
+				const step = (msg.step as string) || '';
+				const detail = (msg.detail as string) || '';
+				if (step === 'done') {
+					// Clear thinking steps when orchestration completes
+					thinkingSteps.set([]);
+				} else {
+					thinkingSteps.update((s) => [
+						...s,
+						{ step, detail, timestamp: Date.now() },
+					]);
+				}
+				break;
+			}
 
 			case 'reply':
-				chatHistory.update((h) => [
-					...h,
-					{ role: 'assistant', text: msg.text as string, timestamp: Date.now() }
-				]);
+				// Trigger typewriter effect: put text in streamingReply,
+				// then after animation completes, move to chatHistory
+				_typewriterReply(msg.text as string);
 				break;
 
 			case 'detections':
