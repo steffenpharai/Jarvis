@@ -52,7 +52,10 @@ def build_messages_with_history(
         ctx_parts.append(f"Rem:{reminders_text[:150]}")
     ctx_line = "[" + ";".join(ctx_parts) + "]" if ctx_parts else ""
 
-    # Last N turns – only user/assistant, trimmed content
+    # Last N turns – only user/assistant, trimmed content.
+    # Vision-turn assistant responses are prefixed so the LLM knows those
+    # scene observations are from a *past* snapshot and should not be
+    # repeated if the user asks about the current view.
     for msg in short_term_turns[-max_turns:]:
         role = msg.get("role")
         if role not in ("user", "assistant"):
@@ -60,6 +63,8 @@ def build_messages_with_history(
         content = (msg.get("content") or "").strip()[:300]
         if not content and role == "user":
             continue
+        if role == "assistant" and msg.get("_vision_turn"):
+            content = "(past observation) " + content
         messages.append({"role": role, "content": content or "(no text)"})
 
     # Current user message (with context prefix)

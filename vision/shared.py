@@ -89,10 +89,22 @@ def get_camera() -> Any | None:
 
 _consecutive_frame_failures = 0
 _MAX_FRAME_FAILURES = 5
+# Number of frames to discard when draining the V4L2 ring buffer.
+# USB cameras on Jetson typically buffer 2-4 frames; 4 is safe.
+_DRAIN_FRAME_COUNT = 4
 
 
-def read_frame() -> Any | None:
+def read_frame(drain: bool = False) -> Any | None:
     """Read one frame from the shared camera.  Thread-safe.
+
+    Parameters
+    ----------
+    drain : bool
+        When True, discard buffered V4L2 frames first so the returned frame
+        is as close to *now* as possible.  Essential for on-demand vision
+        queries after idle periods — the V4L2 ring buffer may hold frames
+        captured seconds or minutes ago.  Default False for high-FPS
+        streaming (MJPEG, continuous broadcast) where latency is acceptable.
 
     Auto-reconnects after ``_MAX_FRAME_FAILURES`` consecutive read failures
     (e.g. USB cam disconnected during walk-around).
@@ -112,6 +124,13 @@ def read_frame() -> Any | None:
 
     with _frame_lock:
         from vision.camera import read_frame as _read
+
+        if drain:
+            # Drain the V4L2 ring buffer (typically 2-4 frames).
+            # This ensures the frame we return is the most recent one,
+            # not one buffered while the camera was idle.
+            for _ in range(_DRAIN_FRAME_COUNT):
+                _read(cap)
 
         frame = _read(cap)
 
@@ -453,7 +472,9 @@ def describe_current_scene(prompt: str | None = None) -> str:
         from vision.detector_mediapipe import detect_faces
         from vision.scene import describe_scene
 
-        frame = read_frame()
+        # Drain V4L2 buffer so we analyse the *current* view, not a
+        # stale buffered frame from before the camera moved.
+        frame = read_frame(drain=True)
         if frame is None:
             return "Vision temporarily unavailable (no frame captured)."
 
@@ -541,7 +562,9 @@ def describe_current_scene_enriched(prompt: str | None = None) -> dict:
         from vision.detector_mediapipe import detect_faces
         from vision.scene import describe_scene_enriched
 
-        frame = read_frame()
+        # Drain V4L2 buffer so we analyse the *current* view, not a
+        # stale buffered frame from before the camera moved.
+        frame = read_frame(drain=True)
         if frame is None:
             result["description"] = "Vision temporarily unavailable (no frame captured)."
             return result

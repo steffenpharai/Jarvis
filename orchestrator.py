@@ -31,10 +31,19 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_ROUNDS = 2
 STT_LLM_RETRIES = 1
 
-# Keywords that indicate the user wants vision analysis
+# Keywords that indicate the user wants vision analysis.
+# Broad on purpose: false-positives cost ~1 s of vision latency, but
+# false-negatives cause the LLM to answer with NO scene context (or
+# worse, stale context from a prior query).
 _VISION_KEYWORDS = _re.compile(
-    r'\b(see|look|camera|watch|show|screen|desk|room|face|person|posture|what.s around'
-    r'|what do you see|who.s here|scan|detect|visual)\b',
+    r'\b(see|sees|seeing|saw|look|looking|camera|watch|watching|show|screen|desk|room'
+    r'|face|person|people|someone|anyone|posture|what.s around|what.s in front'
+    r'|what do you see|who.s here|who.s there|what.s there|what.s going on'
+    r'|what.s happening|how does it look|how do I look|how am I looking'
+    r'|is.*(there|anyone|someone|safe)|anything.*(around|new|changed|different)'
+    r'|check.*(surround|area|room)|environment|surroundings'
+    r'|scan|detect|visual|view|observe|spot|notice|identify'
+    r'|in front of you|around you|near me|over there)\b',
     _re.IGNORECASE,
 )
 
@@ -386,6 +395,14 @@ async def run_orchestrator(
 
             await _thinking_async(bridge, "heard", "Processing your words...")
 
+            # ALWAYS clear stale vision context at the start of each turn.
+            # Old scene data from a previous query must never bleed into
+            # the current prompt — the camera may have moved, objects may
+            # have changed, etc.  Vision is re-captured fresh when needed.
+            vision_description = None
+            vitals_text = None
+            threat_text = None
+
             # Only run vision if the query is vision-related (saves ~1 s)
             if _VISION_KEYWORDS.search(query_text):
                 await _thinking_async(bridge, "vision", "Scanning the environment...")
@@ -405,7 +422,6 @@ async def run_orchestrator(
                     vitals_text = None
                     threat_text = None
                 await _thinking_async(bridge, "vision_done", "Environment analyzed")
-            # else: reuse previous vision_description (or None)
 
             await _thinking_async(bridge, "context", "Building context from memory...")
             status_cb("Thinking (LLM)")
@@ -442,7 +458,14 @@ async def run_orchestrator(
             else:
                 logger.warning("TTS failed for reply")
             short_term.append({"role": "user", "content": query_text})
-            short_term.append({"role": "assistant", "content": final})
+            # If this was a vision turn, tag the response so the LLM knows
+            # any scene observations are from a *past* snapshot, not current.
+            # This prevents it from parroting old "I see a person" responses
+            # when the user moves the camera and asks again.
+            if vision_description is not None:
+                short_term.append({"role": "assistant", "content": final, "_vision_turn": True})
+            else:
+                short_term.append({"role": "assistant", "content": final})
 
             # Fire-and-forget summarisation — don't block the reply pipeline.
             # Uses a background thread so the main loop can immediately return
