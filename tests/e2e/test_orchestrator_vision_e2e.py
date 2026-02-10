@@ -23,7 +23,7 @@ def _ollama_ready():
 
 @pytest.mark.e2e
 def test_vision_description_in_prompt():
-    """Vision description must appear in the user message as [Scene: ...]."""
+    """Vision description must appear in the user message as <scene>...</scene>."""
     from config.prompts import JARVIS_ORCHESTRATOR_SYSTEM_PROMPT
 
     messages = build_messages_with_history(
@@ -37,7 +37,7 @@ def test_vision_description_in_prompt():
     )
     assert len(messages) >= 2
     last_user = [m for m in messages if m.get("role") == "user"][-1]
-    assert "Scene:" in last_user["content"]
+    assert "<scene>" in last_user["content"]
     assert "person(1)" in last_user["content"]
     assert "What do you see?" in last_user["content"]
 
