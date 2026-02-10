@@ -1,18 +1,18 @@
-# Contributing to KAREN
+# Contributing to J.A.R.V.I.S.
 
 First off — thank you for considering contributing. Whether it's a bug report, feature request, or a pull request, every contribution helps make the Jetson AI community stronger.
 
 ## Quick Links
 
-- [Issues](https://github.com/steffenpharai/karen/issues) — report bugs or request features
-- [Discussions](https://github.com/steffenpharai/karen/discussions) — ask questions, share your setup
+- [Issues](https://github.com/steffenpharai/Jarvis/issues) — report bugs or request features
+- [Discussions](https://github.com/steffenpharai/Jarvis/discussions) — ask questions, share your setup
 - [Roadmap](../README.md#-roadmap) — see what's planned
 
 ## Development Setup
 
 ```bash
 # Clone
-git clone https://github.com/steffenpharai/karen.git && cd karen
+git clone https://github.com/steffenpharai/Jarvis.git && cd Jarvis
 
 # Python environment
 python3 -m venv venv && source venv/bin/activate
@@ -89,7 +89,7 @@ Share results in an issue or discussion!
 
 ## Questions?
 
-Open a [Discussion](https://github.com/steffenpharai/karen/discussions). No question is too basic.
+Open a [Discussion](https://github.com/steffenpharai/Jarvis/discussions). No question is too basic.
 
 ---
 

@@ -1,6 +1,6 @@
 <div align="center">
 
-# K.A.R.E.N. — Your Personal J.A.R.V.I.S. on Jetson
+# J.A.R.V.I.S. — Your Offline AI Assistant on Jetson
 
 **A fully offline, Iron Man-style voice + vision AI assistant running entirely on a $249 Jetson Orin Nano Super (8 GB). No cloud. No API keys. No subscriptions. Just you and your AI.**
 
@@ -10,7 +10,7 @@
 [![Ollama](https://img.shields.io/badge/Ollama-Qwen3_1.7b-000000?logo=ollama)](https://ollama.com)
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-PWA-FF3E00?logo=svelte&logoColor=white)](https://kit.svelte.dev)
 [![Tests](https://img.shields.io/badge/tests-247_passing-brightgreen?logo=pytest)](tests/)
-[![GitHub stars](https://img.shields.io/github/stars/steffenpharai/karen?style=social)](https://github.com/steffenpharai/karen)
+[![GitHub stars](https://img.shields.io/github/stars/steffenpharai/Jarvis?style=social)](https://github.com/steffenpharai/Jarvis)
 
 *"At your service, sir."*
 
@@ -20,7 +20,7 @@
 
 <!-- TODO: Replace with your recorded GIF/video -->
 <!-- Record a 15-20s clip: wake word trigger → voice query → YOLOE detection overlay → hologram render → sarcastic JARVIS reply via Bluetooth earbuds. Upload to GitHub and uncomment: -->
-<!-- <p align="center"><img src="docs/assets/demo.gif" width="720" alt="KAREN demo — wake word to hologram in under 4 seconds"></p> -->
+<!-- <p align="center"><img src="docs/assets/demo.gif" width="720" alt="J.A.R.V.I.S. demo — wake word to hologram in under 4 seconds"></p> -->
 
 <p align="center">
   <strong>
@@ -30,11 +30,11 @@
 
 ---
 
-## Why KAREN?
+## Why J.A.R.V.I.S.?
 
-Most "local AI assistants" are a chatbot with a microphone. KAREN is what happens when you actually build the full Iron Man experience on a $249 board:
+Most "local AI assistants" are a chatbot with a microphone. This is what happens when you actually build the full Iron Man experience on a $249 board:
 
-| What others do | What KAREN does |
+| What others do | What J.A.R.V.I.S. does |
 |:---|:---|
 | Text chat with local LLM | **Wake word → STT → LLM with tools → TTS** through Bluetooth earbuds |
 | Maybe a webcam feed | **TensorRT YOLOE open-vocab detection** + ByteTrack tracking + **3D holograms** |
@@ -139,7 +139,7 @@ Real benchmarks on Jetson Orin Nano Super (8 GB), MAXN_SUPER, `jetson_clocks`:
 
 ```bash
 # Clone and enter
-git clone https://github.com/steffenpharai/karen.git && cd karen
+git clone https://github.com/steffenpharai/Jarvis.git && cd Jarvis
 
 # Setup Python environment
 python3 -m venv venv && source venv/bin/activate
@@ -525,22 +525,22 @@ Ensure `--serve` is running and WebSocket is connected (check StatusBar in PWA).
 
 **If you're running this on your Jetson, star the repo!** It helps others find it.
 
-[![Star History Chart](https://api.star-history.com/svg?repos=steffenpharai/karen&type=Date)](https://star-history.com/#steffenpharai/karen&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=steffenpharai/Jarvis&type=Date)](https://star-history.com/#steffenpharai/Jarvis&Date)
 
 ### Get Involved
 
-- **Issues** — [Report bugs or request features](https://github.com/steffenpharai/karen/issues)
-- **Pull Requests** — [Contribute code](https://github.com/steffenpharai/karen/pulls) (see [CONTRIBUTING.md](.github/CONTRIBUTING.md))
-- **Discussions** — [Ask questions, share your setup](https://github.com/steffenpharai/karen/discussions)
+- **Issues** — [Report bugs or request features](https://github.com/steffenpharai/Jarvis/issues)
+- **Pull Requests** — [Contribute code](https://github.com/steffenpharai/Jarvis/pulls) (see [CONTRIBUTING.md](.github/CONTRIBUTING.md))
+- **Discussions** — [Ask questions, share your setup](https://github.com/steffenpharai/Jarvis/discussions)
 
 <!-- Uncomment when created:
-- **Discord** — [Join the KAREN community](https://discord.gg/YOUR_INVITE)
+- **Discord** — [Join the J.A.R.V.I.S. community](https://discord.gg/YOUR_INVITE)
 - **Reddit** — [r/LocalLLaMA](https://reddit.com/r/LocalLLaMA) · [r/JetsonNano](https://reddit.com/r/JetsonNano)
 -->
 
 ### Show Off Your Build
 
-Running KAREN on your Jetson? We'd love to see it! Open a [Discussion](https://github.com/steffenpharai/karen/discussions) with photos/video of your setup and we'll feature it here.
+Running J.A.R.V.I.S. on your Jetson? We'd love to see it! Open a [Discussion](https://github.com/steffenpharai/Jarvis/discussions) with photos/video of your setup and we'll feature it here.
 
 ---
 
@@ -564,7 +564,7 @@ Built on the shoulders of giants:
 
 <div align="center">
 
-**KAREN** is MIT licensed. Built with unreasonable ambition on a tiny board.
+**J.A.R.V.I.S.** is MIT licensed. Built with unreasonable ambition on a tiny board.
 
 *"I do have a life outside of making you look good, sir. It's just not very interesting."*
 

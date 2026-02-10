@@ -1,4 +1,4 @@
-# KAREN — Detailed Setup Guide
+# J.A.R.V.I.S. — Detailed Setup Guide
 
 This guide walks through the complete setup on a fresh Jetson Orin Nano Super with JetPack 6.x.
 
@@ -55,7 +55,7 @@ sudo apt install -y \
 ## Python Environment
 
 ```bash
-cd /path/to/karen
+cd /path/to/Jarvis
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip

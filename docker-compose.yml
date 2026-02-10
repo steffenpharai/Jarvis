@@ -1,4 +1,4 @@
-# KAREN — Docker Compose for Jetson Orin Nano Super
+# J.A.R.V.I.S. — Docker Compose for Jetson Orin Nano Super
 #
 # Prerequisites:
 #   - JetPack 6.x with nvidia-container-runtime
@@ -10,7 +10,7 @@
 #   # Access PWA at http://<jetson-ip>:8000
 
 services:
-  karen:
+  jarvis:
     build: .
     runtime: nvidia
     privileged: true  # Required for Bluetooth/audio access

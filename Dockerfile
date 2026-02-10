@@ -1,16 +1,16 @@
-# KAREN — Dockerfile for Jetson Orin Nano Super (JetPack 6.x)
+# J.A.R.V.I.S. — Dockerfile for Jetson Orin Nano Super (JetPack 6.x)
 #
 # This is a starter Dockerfile. It builds the Python backend and PWA frontend.
 # TensorRT engine files must be built on-device (they're architecture-specific).
 #
 # Usage:
-#   docker build -t karen .
+#   docker build -t jarvis .
 #   docker run --runtime nvidia --gpus all --device /dev/video0 \
 #     --net host --privileged \
 #     -v /run/dbus:/run/dbus \
 #     -v $(pwd)/models:/app/models \
 #     -v $(pwd)/data:/app/data \
-#     karen python main.py --serve
+#     jarvis python main.py --serve
 #
 # Note: For full audio/Bluetooth support, --privileged and dbus mount are needed.
 # For production, prefer running natively (see README quickstart).

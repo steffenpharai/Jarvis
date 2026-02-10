@@ -1,4 +1,4 @@
-# KAREN — Social Media Launch Kit
+# J.A.R.V.I.S. — Social Media Launch Kit
 
 Ready-to-copy posts for maximum visibility. Adjust as needed, but these are optimized for the Jetson/local-LLM/edge-AI communities in 2026.
 
@@ -38,7 +38,7 @@ I built a fully offline Iron Man J.A.R.V.I.S. on a $249 Jetson Orin Nano (8GB):
 
 No cloud. No API keys. 247 tests. MIT licensed.
 
-github.com/steffenpharai/karen
+github.com/steffenpharai/Jarvis
 
 @dustaborin @JetsonHacks @ultraaborlytics #JetsonAI #LocalLLM #EdgeAI
 ```
@@ -90,7 +90,7 @@ Voice + vision + 3D holograms + health monitoring.
 
 "At your service, sir."
 
-github.com/steffenpharai/karen
+github.com/steffenpharai/Jarvis
 ```
 
 ---
@@ -104,7 +104,7 @@ github.com/steffenpharai/karen
 **Body:**
 
 ```markdown
-After months of work, I'm sharing KAREN — a fully offline, Iron Man-style AI assistant running entirely on a Jetson Orin Nano Super (8GB). No cloud, no API keys, no subscriptions.
+After months of work, I'm sharing J.A.R.V.I.S. — a fully offline, Iron Man-style AI assistant running entirely on a Jetson Orin Nano Super (8GB). No cloud, no API keys, no subscriptions.
 
 **What it does:**
 - Wake word → Faster-Whisper STT → Qwen3:1.7b (via Ollama, 100% GPU) → Piper TTS → Bluetooth earbuds
@@ -122,7 +122,7 @@ After months of work, I'm sharing KAREN — a fully offline, Iron Man-style AI a
 
 **The trick to making 1.7B feel smart:** Intent-based routing. Simple queries never see tool schemas — they respond in <1s. Tool queries get `think=true` and only the relevant tool. Same pattern Alexa and Rasa use.
 
-MIT licensed: https://github.com/steffenpharai/karen
+MIT licensed: https://github.com/steffenpharai/Jarvis
 
 I'd love feedback, especially from anyone else building on Jetson. What features would you want to see?
 ```
@@ -134,7 +134,7 @@ I'd love feedback, especially from anyone else building on Jetson. What features
 **Body:**
 
 ```markdown
-Sharing my project KAREN — an offline J.A.R.V.I.S.-style assistant for the Jetson Orin Nano Super (8GB).
+Sharing my project J.A.R.V.I.S. — a fully offline Iron Man-style assistant for the Jetson Orin Nano Super (8GB).
 
 **Stack:**
 - Qwen3:1.7b (Ollama) for the brain
@@ -147,7 +147,7 @@ Sharing my project KAREN — an offline J.A.R.V.I.S.-style assistant for the Jet
 
 Everything runs locally. No Docker needed (native venv). Setup takes ~30 min on a fresh JetPack 6.x install.
 
-GitHub: https://github.com/steffenpharai/karen
+GitHub: https://github.com/steffenpharai/Jarvis
 
 Happy to answer questions about the RAM budgeting, TensorRT optimization, or anything else!
 ```
@@ -158,14 +158,14 @@ Happy to answer questions about the RAM budgeting, TensorRT optimization, or any
 
 ### Jetson Projects category
 
-**Title:** KAREN: Open-source offline voice + vision AI assistant on Jetson Orin Nano Super (8GB)
+**Title:** J.A.R.V.I.S.: Open-source offline voice + vision AI assistant on Jetson Orin Nano Super (8GB)
 
 **Body:**
 
 ```markdown
 Hi everyone,
 
-I'm sharing an open-source project I've been building: **KAREN** — a fully offline AI assistant inspired by J.A.R.V.I.S. from Iron Man, running entirely on the Jetson Orin Nano Super Developer Kit (8GB).
+I'm sharing an open-source project I've been building: **J.A.R.V.I.S.** — a fully offline AI assistant inspired by Iron Man's JARVIS, running entirely on the Jetson Orin Nano Super Developer Kit (8GB).
 
 **Hardware:** Jetson Orin Nano Super 8GB, USB webcam, Bluetooth earbuds
 **Software:** JetPack 6.x, Python 3.10, Ollama, SvelteKit
@@ -185,7 +185,7 @@ I'm sharing an open-source project I've been building: **KAREN** — a fully off
 
 Everything runs offline with zero cloud dependencies. MIT licensed.
 
-**GitHub:** https://github.com/steffenpharai/karen
+**GitHub:** https://github.com/steffenpharai/Jarvis
 
 I'd love feedback from the Jetson community, especially on:
 1. RAM optimization strategies I might be missing
@@ -204,7 +204,7 @@ Thanks for building such a great community around Jetson!
 ```markdown
 Hi @dusty-nv and community,
 
-Wanted to share a project that might interest folks here: **KAREN** — a fully offline Iron Man J.A.R.V.I.S. assistant running on Jetson Orin Nano Super 8GB.
+Wanted to share a project that might interest folks here: **J.A.R.V.I.S.** — a fully offline Iron Man-style AI assistant running on Jetson Orin Nano Super 8GB.
 
 It uses several models simultaneously within the 8GB budget:
 - Qwen3:1.7b via Ollama (2.0GB @ 8192 ctx, 100% GPU)
@@ -215,7 +215,7 @@ It uses several models simultaneously within the 8GB budget:
 
 Currently runs natively (no Docker) but I'm exploring containerization. Would love feedback on whether a jetson-containers recipe would be useful for the community.
 
-GitHub: https://github.com/steffenpharai/karen
+GitHub: https://github.com/steffenpharai/Jarvis
 ```
 
 ---
@@ -233,7 +233,7 @@ The interesting technical challenge was fitting everything in 8GB shared RAM: th
 
 MIT licensed, 247 tests, actively developed.
 
-https://github.com/steffenpharai/karen
+https://github.com/steffenpharai/Jarvis
 ```
 
 ---

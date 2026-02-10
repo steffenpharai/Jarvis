@@ -1,4 +1,4 @@
-# KAREN CI — Lint + Unit Tests
+# J.A.R.V.I.S. CI — Lint + Unit Tests
 # Runs on every push and PR to main.
 # E2E tests require Jetson hardware and run manually.
 
