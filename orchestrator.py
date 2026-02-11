@@ -2,10 +2,19 @@
 
 Performance budget (Jetson Orin Nano 8 GB Super, MAXN_SUPER):
   Target: user query → spoken reply in <10 s.
-  - Vision only for vision-related queries (saves ~1 s)
+  - Background scene context always injected (updated every 5s in bg thread)
+  - Vision re-scan only for explicit vision-related queries
   - Tool round cap = 2 (rarely need more)
   - Summarisation is fire-and-forget (doesn't block reply)
   - Retry once only (no multi-retry with 30 s timeout)
+
+Enhancements over v1:
+  - VAD-based recording (adaptive end-of-speech, no fixed 5s)
+  - BT auto-reconnect daemon (exponential backoff, verbal feedback)
+  - Background scene loop (always-on context for every LLM call)
+  - Proactive intelligence (person enter/leave, object change, env shift)
+  - Preflight checks at startup with verbal status
+  - OOM recovery with vision pause coordination
 """
 
 import asyncio
@@ -30,6 +39,16 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 2
 STT_LLM_RETRIES = 1
+
+# ── Background scene context (always-on, ~5s interval) ───────────────
+_bg_scene_description: str | None = None
+_bg_scene_lock = threading.Lock()
+_bg_scene_stop: threading.Event | None = None
+_BG_SCENE_INTERVAL = 5.0  # seconds between background scene updates
+
+# ── Proactive intelligence state ─────────────────────────────────────
+_prev_person_count: int = 0
+_prev_object_set: set[str] = set()
 
 # Keywords that indicate the user wants vision analysis.
 # Broad on purpose: false-positives cost ~1 s of vision latency, but
@@ -106,16 +125,108 @@ def _gui_status(status: str) -> None:
         pass
 
 
+def _start_bg_scene_thread() -> threading.Event:
+    """Start background thread that continuously updates scene context.
+
+    Industry pattern (Tesla Autopilot, NVIDIA DRIVE): always-on perception
+    loop running independently from the decision/query loop, so context
+    is always fresh when needed.
+    """
+    global _bg_scene_stop
+    _bg_scene_stop = threading.Event()
+
+    def _loop():
+        global _bg_scene_description
+        while not _bg_scene_stop.is_set():
+            try:
+                from vision.shared import describe_current_scene, is_vision_paused
+                if not is_vision_paused():
+                    desc = describe_current_scene()
+                    with _bg_scene_lock:
+                        _bg_scene_description = desc
+            except Exception as e:
+                logger.debug("Background scene update failed: %s", e)
+            _bg_scene_stop.wait(_BG_SCENE_INTERVAL)
+
+    t = threading.Thread(target=_loop, daemon=True, name="bg-scene")
+    t.start()
+    logger.info("Background scene context thread started (%.0fs interval)", _BG_SCENE_INTERVAL)
+    return _bg_scene_stop
+
+
+def get_bg_scene() -> str | None:
+    """Get the latest background scene description (thread-safe)."""
+    with _bg_scene_lock:
+        return _bg_scene_description
+
+
+def _check_proactive_changes(vision_data: dict) -> str | None:
+    """Detect meaningful environmental changes for proactive alerts.
+
+    Pattern: state-change detection (SpaceX mission control telemetry monitoring).
+    Only alert on transitions, not steady state.
+    """
+    global _prev_person_count, _prev_object_set
+
+    tracked = vision_data.get("tracked", [])
+
+    # Count persons
+    current_persons = sum(1 for t in tracked if t.get("class_name", "").lower() == "person")
+    current_objects = {t.get("class_name", "unknown") for t in tracked if t.get("class_name")}
+
+    alerts = []
+
+    # Person entered
+    if current_persons > _prev_person_count and _prev_person_count == 0:
+        alerts.append("Sir, someone has entered the room.")
+    elif current_persons > _prev_person_count:
+        diff = current_persons - _prev_person_count
+        alerts.append(f"Sir, {diff} additional {'person has' if diff == 1 else 'people have'} appeared.")
+
+    # Person left
+    if current_persons == 0 and _prev_person_count > 0:
+        alerts.append("Sir, the room appears to be clear now.")
+
+    # New significant objects appeared
+    new_objects = current_objects - _prev_object_set - {"person"}
+    if new_objects and len(new_objects) <= 3:
+        obj_str = ", ".join(sorted(new_objects))
+        alerts.append(f"Sir, I've noticed new items in view: {obj_str}.")
+
+    _prev_person_count = current_persons
+    _prev_object_set = current_objects
+
+    if alerts:
+        return " ".join(alerts)
+    return None
+
+
 def _wake_listener_impl(
     query_queue: asyncio.Queue,
     loop: asyncio.AbstractEventLoop,
     stop_event: threading.Event,
     status_cb: Callable[[str], None] = _gui_status,
 ) -> None:
-    """Run in thread: wake loop; on wake, record + STT and put text on queue."""
-    from audio.input import get_default_input_index, record_to_file
+    """Run in thread: wake loop; on wake, VAD-record + STT and put text on queue.
+
+    Uses VAD (Voice Activity Detection) instead of fixed 5s recording for
+    lower latency and adaptive speech capture.
+    """
+    from audio.input import get_default_input_index
     from voice.stt import transcribe
     from voice.wakeword import run_wake_loop
+
+    # Try VAD recording first; fall back to fixed-duration
+    try:
+        import importlib.util
+        use_vad = importlib.util.find_spec("webrtcvad") is not None
+        if use_vad:
+            logger.info("VAD-based recording enabled (webrtcvad)")
+        else:
+            logger.info("webrtcvad not found; using fixed-duration recording")
+    except Exception:
+        use_vad = False
+        logger.info("VAD not available; using fixed-duration recording")
 
     def on_wake():
         if stop_event.is_set():
@@ -125,11 +236,21 @@ def _wake_listener_impl(
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             wav_path = f.name
         try:
-            if not record_to_file(
-                wav_path,
-                duration_sec=settings.RECORD_DURATION_SEC,
-                device_index=device_index,
-            ):
+            if use_vad:
+                from audio.vad import record_with_vad
+                success = record_with_vad(
+                    wav_path,
+                    device_index=device_index,
+                )
+            else:
+                from audio.input import record_to_file
+                success = record_to_file(
+                    wav_path,
+                    duration_sec=settings.RECORD_DURATION_SEC,
+                    device_index=device_index,
+                )
+
+            if not success:
                 status_cb("Listening")
                 return
             status_cb("Thinking (STT)")
@@ -293,6 +414,53 @@ async def run_orchestrator(
     loop = asyncio.get_running_loop()
     stop_event = threading.Event()
 
+    # ── Preflight checks ──────────────────────────────────────────────
+    try:
+        from utils.autoconfig import run_preflight
+        await loop.run_in_executor(
+            None, run_preflight, True, True,
+        )
+    except Exception as e:
+        logger.debug("Preflight skipped: %s", e)
+
+    # ── Bluetooth auto-reconnect daemon ───────────────────────────────
+    try:
+        from audio.bluetooth import start_bt_auto_reconnect
+
+        def _on_bt_reconnect():
+            try:
+                wav = synthesize("Bluetooth reconnected, sir.", voice=settings.TTS_VOICE)
+                if wav:
+                    play_wav(wav)
+            except Exception:
+                pass
+
+        def _on_bt_disconnect():
+            try:
+                wav = synthesize("Bluetooth audio disconnected. Attempting to reconnect.", voice=settings.TTS_VOICE)
+                if wav:
+                    play_wav(wav)
+            except Exception:
+                pass
+
+        start_bt_auto_reconnect(
+            on_reconnect=_on_bt_reconnect,
+            on_disconnect=_on_bt_disconnect,
+        )
+    except Exception as e:
+        logger.debug("BT auto-reconnect not started: %s", e)
+
+    # ── STT warm-up (pre-load model to avoid cold-start latency) ──────
+    try:
+        from voice.stt import _get_model
+        await loop.run_in_executor(None, _get_model, settings.STT_MODEL_SIZE)
+        logger.info("STT model pre-loaded: %s", settings.STT_MODEL_SIZE)
+    except Exception as e:
+        logger.debug("STT warm-up failed: %s", e)
+
+    # ── Background scene context thread ───────────────────────────────
+    bg_scene_stop = _start_bg_scene_thread()
+
     if not is_ollama_available(settings.OLLAMA_BASE_URL):
         logger.error("Ollama not available. Start: bash scripts/start-ollama.sh")
         return
@@ -332,16 +500,21 @@ async def run_orchestrator(
                         proactive_vitals = vision_data.get("vitals")
                         proactive_threat = vision_data.get("threat")
 
+                        # Check for environmental changes (person enter/leave, new objects)
+                        change_alert = _check_proactive_changes(vision_data)
+
                         # Proactive vitals alert
                         say_text = None
-                        if proactive_vitals and getattr(proactive_vitals, "fatigue_level", "unknown") in ("moderate", "severe"):
+                        if change_alert:
+                            say_text = change_alert
+                        elif proactive_vitals and getattr(proactive_vitals, "fatigue_level", "unknown") in ("moderate", "severe"):
                             say_text = "Sir, you appear quite fatigued. Might I suggest a brief respite. Even Mr. Stark took the occasional break."
                         elif proactive_vitals and getattr(proactive_vitals, "posture_label", "unknown") == "poor":
                             say_text = "Sir, your posture could use some attention. Perhaps a stretch is in order."
                         elif "person" in proactive_desc.lower():
                             say_text = "Sir, you've been at your desk for quite some time. Might I suggest a brief respite?"
 
-                        # Proactive threat alert
+                        # Proactive threat alert (overrides other messages if critical)
                         if proactive_threat and getattr(proactive_threat, "level", 0) >= 5:
                             rec = getattr(proactive_threat, "recommendation", "")
                             say_text = f"Sir, I'm detecting elevated threat conditions. {rec}"
@@ -395,15 +568,15 @@ async def run_orchestrator(
 
             await _thinking_async(bridge, "heard", "Processing your words...")
 
-            # ALWAYS clear stale vision context at the start of each turn.
-            # Old scene data from a previous query must never bleed into
-            # the current prompt — the camera may have moved, objects may
-            # have changed, etc.  Vision is re-captured fresh when needed.
-            vision_description = None
+            # Always inject background scene context for spatial awareness.
+            # This gives the LLM a continuous "sense of the room" without
+            # needing explicit vision queries — like how MCU Jarvis always
+            # knows what's happening around Tony.
+            vision_description = get_bg_scene()
             vitals_text = None
             threat_text = None
 
-            # Only run vision if the query is vision-related (saves ~1 s)
+            # For explicit vision queries, run full enriched scan (fresh frame)
             if _VISION_KEYWORDS.search(query_text):
                 await _thinking_async(bridge, "vision", "Scanning the environment...")
                 try:
@@ -489,4 +662,10 @@ async def run_orchestrator(
             idle_since = time.monotonic()
     finally:
         stop_event.set()
+        bg_scene_stop.set()
+        try:
+            from audio.bluetooth import stop_bt_auto_reconnect
+            stop_bt_auto_reconnect()
+        except Exception:
+            pass
         save_session(memory)

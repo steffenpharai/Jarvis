@@ -209,10 +209,30 @@ def _drop_caches() -> None:
 
 
 def _recover_from_oom(base_url: str, model: str) -> None:
-    """Best-effort OOM recovery: unload model, drop caches, brief pause."""
+    """Best-effort OOM recovery: pause vision, unload model, drop caches, resume.
+
+    Coordinates with vision subsystem to free GPU memory (Tesla-style graceful
+    degradation — shed non-critical loads before retrying critical path).
+    """
+    # Pause vision to free GPU memory for LLM recovery
+    try:
+        from vision.shared import pause_vision, resume_vision
+        pause_vision()
+        logger.info("Vision paused for OOM recovery")
+    except Exception:
+        pass
+
     unload_model(base_url, model)
     _drop_caches()
-    time.sleep(1)
+    time.sleep(2)  # Allow GPU memory to settle
+
+    # Resume vision after recovery
+    try:
+        from vision.shared import resume_vision
+        resume_vision()
+        logger.info("Vision resumed after OOM recovery")
+    except Exception:
+        pass
 
 
 # OOM retry sequence: step down context until one fits.

@@ -1,6 +1,12 @@
 /**
  * WebSocket client with reconnection (exponential backoff) and offline command queue.
  *
+ * Enhanced with:
+ *   - Message sequence numbers for ordering (prevents WS race conditions)
+ *   - Request-response acknowledgement for button actions
+ *   - Heartbeat ping/pong for connection health monitoring
+ *   - Debounced action dispatching
+ *
  * Uses native Svelte 5 stores ($state-compatible writable stores).
  * Queue messages when readyState !== OPEN, flush on reconnect.
  */
@@ -11,6 +17,7 @@ import { writable, get } from 'svelte/store';
 
 export interface JarvisMessage {
 	type: string;
+	request_id?: string;
 	[key: string]: unknown;
 }
 
@@ -178,6 +185,50 @@ const offlineQueue: string[] = [];
 /** Track texts sent from the PWA so we can deduplicate server echoes */
 const _recentSentTexts: Set<string> = new Set();
 
+/** Last processed server sequence number for ordering */
+let _lastSeq = 0;
+
+/** Pending ack callbacks: request_id → { resolve, timer } */
+const _pendingAcks: Map<string, { resolve: () => void; timer: ReturnType<typeof setTimeout> }> = new Map();
+
+/** Debounce timers for button actions */
+const _actionDebounce: Map<string, ReturnType<typeof setTimeout>> = new Map();
+
+/** Heartbeat interval */
+let _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+const HEARTBEAT_INTERVAL = 30_000;
+
+/** Generate a unique request ID */
+function _genRequestId(): string {
+	return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Debounce an action by key (prevents double-tap) */
+function _debouncedAction(key: string, fn: () => void, delayMs = 500) {
+	const existing = _actionDebounce.get(key);
+	if (existing) {
+		clearTimeout(existing);
+	}
+	_actionDebounce.set(key, setTimeout(() => {
+		_actionDebounce.delete(key);
+		fn();
+	}, delayMs));
+}
+
+/** Send message with ack tracking (returns promise that resolves on ack) */
+function _sendWithAck(msg: JarvisMessage, timeoutMs = 10_000): Promise<void> {
+	return new Promise((resolve) => {
+		const reqId = _genRequestId();
+		msg.request_id = reqId;
+		const timer = setTimeout(() => {
+			_pendingAcks.delete(reqId);
+			resolve(); // resolve anyway after timeout
+		}, timeoutMs);
+		_pendingAcks.set(reqId, { resolve, timer });
+		sendMessage(msg);
+	});
+}
+
 /** Current server host (configurable, persisted in localStorage) */
 function _loadServerHost(): string {
 	if (typeof window === 'undefined') return 'localhost:8000';
@@ -215,6 +266,27 @@ function getWsUrl(): string {
 function handleMessage(event: MessageEvent) {
 	try {
 		const msg: JarvisMessage = JSON.parse(event.data);
+
+		// Handle ack messages
+		if (msg.type === 'ack' && msg.request_id) {
+			const pending = _pendingAcks.get(msg.request_id as string);
+			if (pending) {
+				clearTimeout(pending.timer);
+				pending.resolve();
+				_pendingAcks.delete(msg.request_id as string);
+			}
+			return;
+		}
+
+		// Handle pong (heartbeat response)
+		if (msg.type === 'pong') return;
+
+		// Track sequence numbers (warn on out-of-order, but don't drop)
+		const seq = msg._seq as number | undefined;
+		if (seq !== undefined && seq <= _lastSeq) {
+			// Out of order but still process (WS guarantees in-order per connection)
+		}
+		if (seq !== undefined) _lastSeq = seq;
 
 		switch (msg.type) {
 			case 'status':
@@ -355,7 +427,15 @@ export function connect() {
 	ws.onopen = () => {
 		connectionStatus.set('connected');
 		reconnectAttempt = 0;
+		_lastSeq = 0;
 		flushQueue();
+		// Start heartbeat
+		if (_heartbeatTimer) clearInterval(_heartbeatTimer);
+		_heartbeatTimer = setInterval(() => {
+			if (ws?.readyState === WebSocket.OPEN) {
+				ws.send(JSON.stringify({ type: 'ping' }));
+			}
+		}, HEARTBEAT_INTERVAL);
 	};
 
 	ws.onmessage = handleMessage;
@@ -363,6 +443,10 @@ export function connect() {
 	ws.onclose = () => {
 		connectionStatus.set('disconnected');
 		ws = null;
+		if (_heartbeatTimer) {
+			clearInterval(_heartbeatTimer);
+			_heartbeatTimer = null;
+		}
 		scheduleReconnect();
 	};
 
@@ -406,29 +490,34 @@ export function sendText(text: string) {
 	chatHistory.update((h) => [...h, { role: 'user', text, timestamp: Date.now() }]);
 }
 
-/** Convenience: request a scan */
+/** Convenience: request a scan (debounced) */
 export function sendScan() {
-	sendMessage({ type: 'scan' });
+	_debouncedAction('scan', () => _sendWithAck({ type: 'scan' }), 300);
 }
 
-/** Convenience: request system status */
+/** Convenience: request system status (debounced) */
 export function sendGetStatus() {
-	sendMessage({ type: 'get_status' });
+	_debouncedAction('get_status', () => _sendWithAck({ type: 'get_status' }), 300);
 }
 
-/** Convenience: toggle sarcasm */
+/** Convenience: toggle sarcasm (debounced) */
 export function sendSarcasmToggle(enabled: boolean) {
-	sendMessage({ type: 'sarcasm_toggle', enabled });
+	_debouncedAction('sarcasm', () => _sendWithAck({ type: 'sarcasm_toggle', enabled }), 300);
 }
 
-/** Convenience: request hologram render */
+/** Convenience: request hologram render (debounced) */
 export function sendHologramRequest() {
-	sendMessage({ type: 'hologram_request' });
+	_debouncedAction('hologram', () => _sendWithAck({ type: 'hologram_request' }), 500);
 }
 
-/** Convenience: request vitals update */
+/** Convenience: request vitals update (debounced) */
 export function sendVitalsRequest() {
-	sendMessage({ type: 'vitals_request' });
+	_debouncedAction('vitals', () => _sendWithAck({ type: 'vitals_request' }), 500);
+}
+
+/** Convenience: send interrupt (immediate, no debounce) */
+export function sendInterrupt() {
+	sendMessage({ type: 'interrupt' });
 }
 
 // ── Chat history localStorage persistence ────────────────────────────

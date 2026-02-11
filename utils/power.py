@@ -225,3 +225,69 @@ def should_throttle_vision() -> bool:
             return True
 
     return False
+
+
+def get_battery_summary() -> str | None:
+    """Return a human-readable battery status string for LLM context / TTS.
+
+    Returns None if no battery is detected.
+    """
+    battery = get_battery_status()
+    if not battery or not battery.get("present"):
+        return None
+
+    parts = []
+    cap = battery.get("capacity_pct")
+    status = battery.get("status", "unknown")
+
+    if cap is not None:
+        parts.append(f"{cap}%")
+    if isinstance(status, str) and status.lower() not in ("unknown", ""):
+        parts.append(status.lower())
+
+    voltage = battery.get("voltage_uv")
+    if isinstance(voltage, (int, float)) and voltage > 0:
+        volts = voltage / 1_000_000
+        parts.append(f"{volts:.1f}V")
+
+    if not parts:
+        return "Battery detected, status unknown"
+    return f"Battery: {', '.join(parts)}"
+
+
+def get_portable_status() -> dict:
+    """Comprehensive status for portable mode display / alerts.
+
+    Returns dict with: temp_c, battery_pct, battery_status, gpu_pct,
+    power_mode, warnings (list of human-readable alert strings).
+    """
+    result: dict = {
+        "temp_c": None,
+        "battery_pct": None,
+        "battery_status": None,
+        "gpu_pct": None,
+        "power_mode": None,
+        "warnings": [],
+    }
+
+    result["temp_c"] = get_thermal_temperature()
+    result["gpu_pct"] = get_gpu_utilization()
+    result["power_mode"] = get_power_mode()
+
+    battery = get_battery_status()
+    if battery:
+        result["battery_pct"] = battery.get("capacity_pct")
+        result["battery_status"] = battery.get("status")
+
+        cap = battery.get("capacity_pct")
+        if isinstance(cap, (int, float)):
+            if cap < 10:
+                result["warnings"].append(f"Battery critical: {cap}%. Connect power immediately.")
+            elif cap < 25:
+                result["warnings"].append(f"Battery low: {cap}%. Consider connecting power.")
+
+    temp = result["temp_c"]
+    if temp is not None and temp > 75:
+        result["warnings"].append(f"Temperature elevated: {temp:.0f}C. Reducing processing load.")
+
+    return result

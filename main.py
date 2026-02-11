@@ -515,6 +515,7 @@ def main() -> int:
         if not ok:
             logger.error("CUDA required for vision: %s", msg)
             return 1
+        logger.info("Starting Jarvis server with all subsystems...")
         _handle_serve()
         return 0
 

@@ -9,7 +9,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![Ollama](https://img.shields.io/badge/Ollama-Qwen3_1.7b-000000?logo=ollama)](https://ollama.com)
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-PWA-FF3E00?logo=svelte&logoColor=white)](https://kit.svelte.dev)
-[![Tests](https://img.shields.io/badge/tests-247_passing-brightgreen?logo=pytest)](tests/)
+[![Tests](https://img.shields.io/badge/tests-283_passing-brightgreen?logo=pytest)](tests/)
 [![GitHub stars](https://img.shields.io/github/stars/steffenpharai/Jarvis?style=social)](https://github.com/steffenpharai/Jarvis)
 
 *"At your service, sir."*
@@ -50,9 +50,10 @@ Most "local AI assistants" are a chatbot with a microphone. This is what happens
 
 ### Voice Pipeline
 - **openWakeWord** — custom wake word, always listening
-- **Faster-Whisper** — local STT, no cloud transcription
+- **Faster-Whisper** — local STT, no cloud transcription, warm-started at boot
 - **Piper TTS** — British male voice (Paul Bettany energy)
-- **Bluetooth** — full HFP/A2DP support for wireless earbuds
+- **Bluetooth** — full HFP/A2DP with auto-reconnect daemon (exponential backoff)
+- **WebRTC VAD** — adaptive end-of-speech detection (no more fixed 5s recording)
 
 ### LLM Brain
 - **Qwen3:1.7b** (Q4_K_M) via Ollama — native tool-calling, 100% GPU offload
@@ -67,7 +68,10 @@ Most "local AI assistants" are a chatbot with a microphone. This is what happens
 - **DepthAnything V2 Small** (TensorRT FP16) — real-time depth maps for 3D holograms
 - **MediaPipe** — face mesh (EAR fatigue, rPPG heart rate) + pose (posture scoring)
 - **Threat detection** — anomaly scoring with LLM-integrated alerts
-- **Portable mode** — 320×320 @ 10 FPS with thermal throttling for walk-around use
+- **Always-on background scene** — continuous context updated every 5s for spatial awareness
+- **Proactive intelligence** — detects person enter/leave, new objects, env changes
+- **Proximity alerts** — distance-based audio cues in portable mode ("Sir, obstacle ahead")
+- **Portable mode** — 320×320 @ 10 FPS with thermal throttling + battery monitoring
 
 ### Iron Man PWA
 - **Live MJPEG** camera feed with detection overlays and threat-level borders
@@ -79,9 +83,13 @@ Most "local AI assistants" are a chatbot with a microphone. This is what happens
 - **Accessible from any device** on the LAN
 
 ### Robustness
-- **247 unit + E2E tests** with pytest
-- **Multi-layer CUDA OOM protection** — auto context reduction (8192→4096→2048→1024)
+- **283 unit + E2E tests** with pytest
+- **Preflight system checks** — validates all subsystems at startup with verbal status
+- **Multi-layer CUDA OOM protection** — pauses vision, unloads model, drops caches, retries with smaller context
+- **Bluetooth auto-reconnect** — daemon monitors and reconnects with exponential backoff
 - **Camera auto-reconnect** on USB disconnect
+- **WebSocket reliability** — message sequencing, rate limiting, heartbeat, ack tracking
+- **PWA button debouncing** — loading states, disabled when disconnected
 - **Graceful degradation** — every subsystem is optional, pipeline continues if one fails
 
 ---
@@ -321,8 +329,12 @@ config/
   settings.py            Jetson/Ollama tuning parameters
   prompts.py             JARVIS persona and system prompts
 
-audio/                   Mic selection, recording, playback, Bluetooth hints
+audio/                   Mic selection, VAD recording, playback, BT auto-reconnect
 voice/                   Wake word (openWakeWord), STT (Faster-Whisper), TTS (Piper)
+utils/
+  autoconfig.py          Preflight checks and startup validation
+  power.py               Jetson power, thermal, battery, GPU monitoring
+  reminders.py           Local JSON-based reminder CRUD
 llm/                     Ollama client (OOM-hardened) and context builder
 
 vision/
@@ -332,6 +344,7 @@ vision/
   depth.py               DepthAnything V2 Small TensorRT (depth + point clouds)
   vitals.py              Fatigue (EAR), posture scoring, rPPG heart rate
   threat.py              Threat/anomaly scoring
+  proximity.py           Distance-based proximity alerts for portable mode
   scene.py               Natural-language scene description for LLM context
   shared.py              Pipeline orchestration and singletons
 
@@ -348,7 +361,7 @@ pwa/                     SvelteKit PWA frontend
   Dashboard              Jetson GPU/CPU/thermal stats
 
 scripts/                 Setup, export, and bootstrap scripts
-tests/                   247 unit + E2E tests (pytest)
+tests/                   283 unit + E2E tests (pytest)
 models/                  TTS voices, TensorRT engines
 ```
 
@@ -436,18 +449,20 @@ All settings are environment variables with sane defaults. Key ones:
 source venv/bin/activate
 
 ruff check .                        # Lint
-pytest tests/unit/                  # 247 unit tests
+pytest tests/unit/                  # 283 unit tests
 pytest tests/e2e/ -m e2e            # E2E tests (requires hardware)
 python main.py --dry-run            # Smoke test
 ```
 
 | Module | Coverage |
 |:---|:---|
-| `vision/*` | Scene enrichment, pipeline, tracker, depth, vitals, threat |
-| `server/*` | WebSocket bridge, hologram/vitals/threat handling |
-| `llm/*` | Ollama client, context builder, OOM recovery |
+| `audio/*` | Playback, Bluetooth reconnect/daemon, VAD recording |
+| `vision/*` | Scene enrichment, pipeline, tracker, depth, vitals, threat, proximity |
+| `server/*` | WebSocket bridge, message sequencing, hologram/vitals/threat handling |
+| `llm/*` | Ollama client, context builder, OOM recovery with vision pause |
 | `tools.py` | Tool schemas, registry, execution |
-| `orchestrator.py` | Intent routing, tool dispatch, context injection |
+| `orchestrator.py` | Intent routing, tool dispatch, proactive intelligence, background scene |
+| `utils/*` | Preflight checks, power/battery monitoring, reminders |
 | E2E | Vision benchmarks, hologram pipeline, vitals, portable mode |
 
 ---
@@ -501,7 +516,7 @@ Check `ollama ps` — model should be 100% GPU at 8192 ctx. For plain chat, ensu
 <details>
 <summary><strong>Bluetooth mic not working</strong></summary>
 
-Switch buds to HFP profile in `bluetoothctl` or Blueman. Or use a USB microphone for input and keep A2DP for TTS output.
+Switch buds to HFP profile in `bluetoothctl` or Blueman. Or use a USB microphone for input and keep A2DP for TTS output. The auto-reconnect daemon will monitor and re-establish BT connections automatically — check logs for "BT auto-reconnect" messages.
 
 </details>
 

@@ -3,12 +3,18 @@
 Holds a shared query queue (same one the orchestrator reads from) and a
 broadcast set of connected WebSocket clients.  Thread-safe: the orchestrator
 may run in its own thread while FastAPI runs on the async event loop.
+
+Enhanced with:
+  - Message sequence numbers for ordering (prevents WS race conditions)
+  - Acknowledgement support (PWA can confirm receipt)
+  - Rate limiting for broadcasts (prevents flood on slow networks)
 """
 
 import asyncio
 import json
 import logging
 import threading
+import time
 from typing import Any
 
 from fastapi import WebSocket
@@ -27,6 +33,17 @@ class Bridge:
         self._clients_lock = threading.Lock()
         # Event loop reference (set once at startup)
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Message sequence counter for ordering
+        self._seq: int = 0
+        self._seq_lock = threading.Lock()
+        # Rate limiting: track last broadcast time per message type
+        self._last_broadcast: dict[str, float] = {}
+        self._rate_limit_ms: dict[str, int] = {
+            "detections": 500,
+            "vitals": 1000,
+            "threat": 1000,
+            "thinking_step": 100,
+        }
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -68,12 +85,36 @@ class Bridge:
         except Exception:
             self.remove_client(ws)
 
+    def _next_seq(self) -> int:
+        """Atomically increment and return the next sequence number."""
+        with self._seq_lock:
+            self._seq += 1
+            return self._seq
+
+    def _should_rate_limit(self, msg_type: str) -> bool:
+        """Check if this message type should be rate-limited."""
+        limit_ms = self._rate_limit_ms.get(msg_type, 0)
+        if limit_ms <= 0:
+            return False
+        now = time.monotonic()
+        last = self._last_broadcast.get(msg_type, 0)
+        if (now - last) * 1000 < limit_ms:
+            return True
+        self._last_broadcast[msg_type] = now
+        return False
+
     async def broadcast(self, data: dict) -> None:
-        """Send JSON payload to every connected client."""
+        """Send JSON payload to every connected client with sequence number."""
+        msg_type = data.get("type", "")
+        if self._should_rate_limit(msg_type):
+            return
+
         with self._clients_lock:
             targets = list(self._clients)
         if not targets:
             return
+        # Inject sequence number for ordering on the client side
+        data["_seq"] = self._next_seq()
         await asyncio.gather(*(self._send_json(ws, data) for ws in targets))
 
     def broadcast_threadsafe(self, data: dict) -> None:
@@ -199,8 +240,17 @@ class Bridge:
         elif msg_type == "vitals_request":
             await self._handle_vitals_request()
 
+        elif msg_type == "ping":
+            # Heartbeat response for connection health
+            await self.broadcast({"type": "pong"})
+
         else:
             logger.debug("Unknown WS message type: %r", msg_type)
+
+        # Send acknowledgement if client included a request_id
+        req_id = msg.get("request_id")
+        if req_id:
+            await self.broadcast({"type": "ack", "request_id": req_id})
 
     async def _handle_scan(self) -> None:
         """Run vision_analyze tool and broadcast detections + description."""

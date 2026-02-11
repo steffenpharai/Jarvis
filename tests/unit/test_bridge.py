@@ -48,7 +48,9 @@ async def test_broadcast(bridge_instance):
 
     await bridge_instance.broadcast({"type": "status", "status": "Listening"})
     assert len(ws1.sent) == 1
-    assert ws1.sent[0] == {"type": "status", "status": "Listening"}
+    assert ws1.sent[0]["type"] == "status"
+    assert ws1.sent[0]["status"] == "Listening"
+    assert "_seq" in ws1.sent[0]  # Sequence number added by bridge
     assert len(ws2.sent) == 1
 
 
@@ -69,6 +71,7 @@ async def test_broadcast_removes_dead_client(bridge_instance):
 
     await bridge_instance.broadcast({"type": "reply", "text": "hi"})
     assert len(ws_alive.sent) == 1
+    assert ws_alive.sent[0]["type"] == "reply"
     assert ws_dead not in bridge_instance._clients
 
 
@@ -111,17 +114,29 @@ async def test_send_helpers(bridge_instance):
         "detections", "error", "wake", "proactive",
         "hologram", "vitals", "threat", "thinking_step",
     ]
+    # Verify all messages have sequence numbers
+    for m in ws.sent:
+        assert "_seq" in m
 
 
 @pytest.mark.asyncio
 async def test_thinking_step_messages(bridge_instance):
     """Thinking steps broadcast the correct step/detail fields."""
+    import asyncio
+
     ws = FakeWebSocket()
     bridge_instance.add_client(ws)
 
+    # Clear rate limit state so all messages go through
+    bridge_instance._last_broadcast.clear()
+
     await bridge_instance.send_thinking_step("heard", "Processing your words...")
+    # Small delay to avoid rate limiting (100ms between thinking_step messages)
+    await asyncio.sleep(0.15)
     await bridge_instance.send_thinking_step("context", "Building context from memory...")
+    await asyncio.sleep(0.15)
     await bridge_instance.send_thinking_step("reasoning", "Analyzing and reasoning...")
+    await asyncio.sleep(0.15)
     await bridge_instance.send_thinking_step("done")
 
     assert len(ws.sent) == 4

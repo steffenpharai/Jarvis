@@ -3,7 +3,7 @@
   Keyboard: Tab to mic, Enter to send.
 -->
 <script lang="ts">
-	import { sendText, sendScan, sendGetStatus, sendSarcasmToggle, sendHologramRequest, sendVitalsRequest } from '$lib/stores/connection';
+	import { sendText, sendScan, sendGetStatus, sendSarcasmToggle, sendHologramRequest, sendVitalsRequest, connectionStatus } from '$lib/stores/connection';
 	import {
 		isListening,
 		speechSupported,
@@ -19,6 +19,13 @@
 	let supported = $derived($speechSupported);
 	let mode = $derived($voiceMode);
 	let sarcasmOn = $state(false);
+	let connected = $derived($connectionStatus === 'connected');
+
+	// Loading states for buttons (visual feedback while waiting for ack)
+	let scanLoading = $state(false);
+	let statusLoading = $state(false);
+	let holoLoading = $state(false);
+	let vitalsLoading = $state(false);
 
 	function handleSend() {
 		const text = textInput.trim();
@@ -50,50 +57,82 @@
 		sarcasmOn = !sarcasmOn;
 		sendSarcasmToggle(sarcasmOn);
 	}
+
+	function handleScan() {
+		if (scanLoading) return;
+		scanLoading = true;
+		sendScan();
+		setTimeout(() => { scanLoading = false; }, 3000);
+	}
+
+	function handleStatus() {
+		if (statusLoading) return;
+		statusLoading = true;
+		sendGetStatus();
+		setTimeout(() => { statusLoading = false; }, 3000);
+	}
+
+	function handleHolo() {
+		if (holoLoading) return;
+		holoLoading = true;
+		sendHologramRequest();
+		setTimeout(() => { holoLoading = false; }, 5000);
+	}
+
+	function handleVitals() {
+		if (vitalsLoading) return;
+		vitalsLoading = true;
+		sendVitalsRequest();
+		setTimeout(() => { vitalsLoading = false; }, 3000);
+	}
 </script>
 
 <div class="glass border-t border-[var(--color-jarvis-border)] p-3 space-y-3">
 	<!-- Quick actions row -->
 	<div class="flex items-center justify-center gap-2 flex-wrap">
 		<button
-			onclick={sendScan}
+			onclick={handleScan}
+			disabled={!connected || scanLoading}
 			class="px-3 py-1.5 rounded-lg text-xs font-medium uppercase tracking-wider
 				bg-[var(--color-jarvis-card)] border border-[var(--color-jarvis-border)]
 				text-[var(--color-jarvis-cyan)] hover:border-[var(--color-jarvis-cyan)]/40
-				transition-colors"
+				transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
 			aria-label="Scan with camera"
 		>
-			Scan
+			{scanLoading ? 'Scanning...' : 'Scan'}
 		</button>
 		<button
-			onclick={sendGetStatus}
+			onclick={handleStatus}
+			disabled={!connected || statusLoading}
 			class="px-3 py-1.5 rounded-lg text-xs font-medium uppercase tracking-wider
 				bg-[var(--color-jarvis-card)] border border-[var(--color-jarvis-border)]
 				text-[var(--color-jarvis-text)] hover:border-[var(--color-jarvis-cyan)]/40
-				transition-colors"
+				transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
 			aria-label="Get system status"
 		>
-			Status
+			{statusLoading ? 'Loading...' : 'Status'}
 		</button>
 		<button
-			onclick={sendHologramRequest}
+			onclick={handleHolo}
+			disabled={!connected || holoLoading}
 			class="px-3 py-1.5 rounded-lg text-xs font-medium uppercase tracking-wider
 				bg-[var(--color-jarvis-card)] border border-[var(--color-jarvis-border)]
 				text-[var(--color-jarvis-magenta)] hover:border-[var(--color-jarvis-magenta)]/40
-				transition-colors"
+				transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
 			aria-label="Request 3D hologram"
 		>
-			Holo
+			{holoLoading ? 'Rendering...' : 'Holo'}
 		</button>
 		<button
-			onclick={sendVitalsRequest}
+			onclick={handleVitals}
+			disabled={!connected || vitalsLoading}
 			class="px-3 py-1.5 rounded-lg text-xs font-medium uppercase tracking-wider
 				bg-[var(--color-jarvis-card)] border border-[var(--color-jarvis-border)]
 				text-[var(--color-jarvis-green)] hover:border-[var(--color-jarvis-green)]/40
-				transition-colors"
+				transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
 			aria-label="Request vitals update"
 		>
-			Vitals
+			{vitalsLoading ? 'Loading...' : 'Vitals'}
 		</button>
 		<button
 			onclick={toggleSarcasm}

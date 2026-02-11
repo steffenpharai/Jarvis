@@ -9,6 +9,7 @@ opencv-python-headless>=4.8.0
 sounddevice>=0.4.6
 numpy>=1.24.0
 requests>=2.31.0
+webrtcvad>=2.0.10  # VAD for adaptive end-of-speech detection
 
 # Vision (Jetson Orin – TensorRT on-device)
 ultralytics>=8.2.0
