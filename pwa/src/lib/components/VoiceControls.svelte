@@ -3,7 +3,12 @@
   Keyboard: Tab to mic, Enter to send.
 -->
 <script lang="ts">
-	import { sendText, sendScan, sendGetStatus, sendSarcasmToggle, sendHologramRequest, sendVitalsRequest, connectionStatus } from '$lib/stores/connection';
+	import {
+		sendText, sendScan, sendGetStatus, sendSarcasmToggle,
+		sendHologramRequest, sendVitalsRequest, connectionStatus,
+		sendScanAsync, sendGetStatusAsync, sendHologramRequestAsync,
+		sendVitalsRequestAsync,
+	} from '$lib/stores/connection';
 	import {
 		isListening,
 		speechSupported,
@@ -20,8 +25,9 @@
 	let mode = $derived($voiceMode);
 	let sarcasmOn = $state(false);
 	let connected = $derived($connectionStatus === 'connected');
+	let hasText = $derived(textInput.trim().length > 0);
 
-	// Loading states for buttons (visual feedback while waiting for ack)
+	// Loading states for buttons (ack-based: resolved when server responds)
 	let scanLoading = $state(false);
 	let statusLoading = $state(false);
 	let holoLoading = $state(false);
@@ -61,29 +67,25 @@
 	function handleScan() {
 		if (scanLoading) return;
 		scanLoading = true;
-		sendScan();
-		setTimeout(() => { scanLoading = false; }, 3000);
+		sendScanAsync().finally(() => { scanLoading = false; });
 	}
 
 	function handleStatus() {
 		if (statusLoading) return;
 		statusLoading = true;
-		sendGetStatus();
-		setTimeout(() => { statusLoading = false; }, 3000);
+		sendGetStatusAsync().finally(() => { statusLoading = false; });
 	}
 
 	function handleHolo() {
 		if (holoLoading) return;
 		holoLoading = true;
-		sendHologramRequest();
-		setTimeout(() => { holoLoading = false; }, 5000);
+		sendHologramRequestAsync().finally(() => { holoLoading = false; });
 	}
 
 	function handleVitals() {
 		if (vitalsLoading) return;
 		vitalsLoading = true;
-		sendVitalsRequest();
-		setTimeout(() => { vitalsLoading = false; }, 3000);
+		sendVitalsRequestAsync().finally(() => { vitalsLoading = false; });
 	}
 </script>
 
@@ -98,6 +100,7 @@
 				text-[var(--color-jarvis-cyan)] hover:border-[var(--color-jarvis-cyan)]/40
 				transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
 			aria-label="Scan with camera"
+			aria-busy={scanLoading}
 		>
 			{scanLoading ? 'Scanning...' : 'Scan'}
 		</button>
@@ -109,6 +112,7 @@
 				text-[var(--color-jarvis-text)] hover:border-[var(--color-jarvis-cyan)]/40
 				transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
 			aria-label="Get system status"
+			aria-busy={statusLoading}
 		>
 			{statusLoading ? 'Loading...' : 'Status'}
 		</button>
@@ -120,6 +124,7 @@
 				text-[var(--color-jarvis-magenta)] hover:border-[var(--color-jarvis-magenta)]/40
 				transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
 			aria-label="Request 3D hologram"
+			aria-busy={holoLoading}
 		>
 			{holoLoading ? 'Rendering...' : 'Holo'}
 		</button>
@@ -131,6 +136,7 @@
 				text-[var(--color-jarvis-green)] hover:border-[var(--color-jarvis-green)]/40
 				transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
 			aria-label="Request vitals update"
+			aria-busy={vitalsLoading}
 		>
 			{vitalsLoading ? 'Loading...' : 'Vitals'}
 		</button>
@@ -173,8 +179,10 @@
 
 		<button
 			onclick={handleSend}
+			disabled={!hasText}
 			class="p-2.5 rounded-xl bg-[var(--color-jarvis-cyan)]/10 border border-[var(--color-jarvis-cyan)]/30
-				text-[var(--color-jarvis-cyan)] hover:bg-[var(--color-jarvis-cyan)]/20 transition-colors"
+				text-[var(--color-jarvis-cyan)] hover:bg-[var(--color-jarvis-cyan)]/20 transition-colors
+				disabled:opacity-30 disabled:cursor-not-allowed"
 			aria-label="Send message"
 		>
 			<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

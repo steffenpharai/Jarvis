@@ -74,16 +74,22 @@
 		return formatTime(ts);
 	}
 
+	// Debounced auto-scroll: use requestAnimationFrame to coalesce rapid
+	// updates (prevents janky scrolling during message bursts).
+	let _scrollRaf: number | null = null;
 	$effect(() => {
-		// Auto-scroll to bottom on any update
 		if (history.length || interim || serverInterim || steps.length || streaming !== null) {
 			tick().then(() => {
-				if (scrollContainer) {
-					scrollContainer.scrollTo({
-						top: scrollContainer.scrollHeight,
-						behavior: 'smooth',
-					});
-				}
+				if (_scrollRaf) cancelAnimationFrame(_scrollRaf);
+				_scrollRaf = requestAnimationFrame(() => {
+					if (scrollContainer) {
+						scrollContainer.scrollTo({
+							top: scrollContainer.scrollHeight,
+							behavior: 'smooth',
+						});
+					}
+					_scrollRaf = null;
+				});
 			});
 		}
 	});

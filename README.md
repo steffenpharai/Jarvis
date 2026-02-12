@@ -9,7 +9,7 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
 [![Ollama](https://img.shields.io/badge/Ollama-Qwen3_1.7b-000000?logo=ollama)](https://ollama.com)
 [![SvelteKit](https://img.shields.io/badge/SvelteKit-PWA-FF3E00?logo=svelte&logoColor=white)](https://kit.svelte.dev)
-[![Tests](https://img.shields.io/badge/tests-395_passing-brightgreen?logo=pytest)](tests/)
+[![Tests](https://img.shields.io/badge/tests-367_passing-brightgreen?logo=pytest)](tests/)
 [![GitHub stars](https://img.shields.io/github/stars/steffenpharai/Jarvis?style=social)](https://github.com/steffenpharai/Jarvis)
 
 *"At your service, sir."*
@@ -74,14 +74,22 @@ Most "local AI assistants" are a chatbot with a microphone. This is what happens
 - **Portable mode** — 320×320 @ 10 FPS with thermal throttling + battery monitoring
 
 ### Advanced Perception (Tesla FSD / SpaceX Dragon inspired)
-- **Optical flow** (Farneback/DIS) — dense motion vectors between consecutive frames (~15ms)
-- **Ego-motion estimation** — RANSAC fundamental matrix decomposition separates camera motion from object motion
+- **Optical flow** (DIS default, Farneback available) — dense motion vectors with pre-allocated buffers (~6ms at 320x240)
+- **Ego-motion estimation** — RANSAC fundamental matrix with result caching for static scenes (~0.04ms cached, ~2ms uncached)
 - **Object velocities in m/s** — flow + depth fusion via pinhole camera model
-- **Trajectory prediction** — Kalman forward projection (1–3s), approaching/receding/crossing classification
+- **Trajectory prediction** — vectorised NumPy batch computation (all objects at once), stationary skip (~0.5ms for 10 objects)
 - **Collision detection** — time-to-collision estimation with proactive voiced alerts: *"Sir, bicycle from left at 8 km/h — collision in 2.4 seconds"*
 - **Walk-around awareness** — detects user walking/panning/turning, stabilises detections during ego-motion
 - **Motion-aware context** — LLM receives speeds, distances, trajectories, ego-motion state automatically
-- **Zero extra GPU** — entire perception pipeline is CPU-only (OpenCV/NumPy), ~17ms overhead
+- **Zero extra GPU** — entire perception pipeline is CPU-only (OpenCV/NumPy), **~8ms avg / ~10ms p95**
+
+### Hands-Free Walk-Around Mode (NEW)
+- **Ambient awareness** — always-on DIS flow at 160x120 (~2ms), detects motion/scene changes without full YOLOE
+- **Zero manual triggers** — ambient events auto-escalate to full perception when significant change detected
+- **Proactive verbalization** — collision alerts, scene changes, walking/stationary transitions spoken automatically
+- **Cooldown system** — prevents verbal spam (10s non-critical, 0s safety-critical like collisions)
+- **Thermal/battery adaptive** — auto-reduces duty cycle at >70°C or <15% battery, pauses at >80°C
+- **State machine** — IDLE (2 Hz) → ACTIVE (5 Hz) → COOLDOWN, with configurable durations
 
 ### Iron Man PWA
 - **Live MJPEG** camera feed with detection overlays and threat-level borders
@@ -93,13 +101,17 @@ Most "local AI assistants" are a chatbot with a microphone. This is what happens
 - **Accessible from any device** on the LAN
 
 ### Robustness
-- **395 unit + E2E tests** with pytest (334 unit, 61 E2E)
+- **367+ unit + E2E tests** with pytest (344 unit, 23+ E2E)
 - **Preflight system checks** — validates all subsystems at startup with verbal status
 - **Multi-layer CUDA OOM protection** — pauses vision, unloads model, drops caches, retries with smaller context
-- **Bluetooth auto-reconnect** — daemon monitors and reconnects with exponential backoff
+- **Bluetooth auto-reconnect** — daemon monitors every 10s, verifies audio route after reconnect
+- **BT-aware VAD** — longer silence threshold (2.0s) when BT audio detected (compensates codec latency)
+- **Listening chime** — pre-synthesized "Listening, sir" played instantly on wake word detection
 - **Camera auto-reconnect** on USB disconnect
-- **WebSocket reliability** — message sequencing, rate limiting, heartbeat, ack tracking
-- **PWA button debouncing** — loading states, disabled when disconnected
+- **WebSocket reliability** — message sequencing, reorder buffer (50ms hold for gaps), rate limiting, heartbeat with health tracking (good/degraded/lost), ack-based loading
+- **PWA button debouncing** — ack-based loading states (resolved on server response, not timeout), `aria-busy` accessibility
+- **Verbal error recovery** — TTS-spoken recovery messages on STT/LLM/vision failures instead of silent drops
+- **Connection health** — pong-based heartbeat monitoring, auto-reconnect on 3 missed pongs, state resync on reconnect
 - **Graceful degradation** — every subsystem is optional, pipeline continues if one fails
 
 ---
@@ -136,7 +148,8 @@ Real benchmarks on Jetson Orin Nano Super (8 GB), MAXN_SUPER, `jetson_clocks`:
 | Qwen3:1.7b @ 8192 ctx | ~2.0 GB | 100% GPU, flash attention + q8_0 KV |
 | YOLOE-26N TensorRT | ~0.3 GB | FP16 engine |
 | DepthAnything V2 Small | ~0.4 GB | FP16 engine, optional |
-| Perception pipeline | ~0.0 GB | CPU-only (OpenCV/NumPy), ~17ms overhead |
+| Perception pipeline | ~0.0 GB | CPU-only (OpenCV/NumPy), ~8ms avg (DIS + cache) |
+| Ambient awareness | ~0.001 GB | CPU-only, 160x120 DIS flow, ~2ms per check |
 | MediaPipe (face + pose) | ~0.1 GB | CPU inference |
 | Faster-Whisper small | ~0.5 GB | Loaded on demand |
 | OS + Desktop + Python | ~3.5 GB | JetPack 6.x + X11 |
@@ -319,22 +332,29 @@ graph TB
 ```
 Camera Frame (t)
   ├─ YOLOE-26N (TensorRT) → detections + open-vocab prompting
-  ├─ Optical Flow (Farneback/DIS vs frame t-1) → dense motion vectors
+  ├─ Optical Flow (DIS, pre-alloc buffer, 320x240) → dense motion vectors (~6ms)
   ├─ DepthAnything V2 Small → depth map + 3D point cloud
   ├─ MediaPipe Face Mesh → EAR fatigue detection, rPPG heart rate
   ├─ MediaPipe Pose → posture scoring
   │
-  ▼ Perception Fusion (CPU-only, ~17ms)
-  ├─ Ego-motion estimation (RANSAC + fundamental matrix)
+  ▼ Perception Fusion (CPU-only, ~8ms avg / ~10ms p95)
+  ├─ Ego-motion estimation (RANSAC + cache for static scenes, ~0.04ms cached)
   ├─ Flow-assisted ByteTrack (60% flow / 40% Kalman prediction)
-  ├─ Ego-motion compensation → true object velocities (m/s)
-  ├─ Trajectory prediction (1-3s Kalman projection)
+  ├─ Ego-motion compensation → true object velocities (m/s, vectorised NumPy)
+  ├─ Trajectory prediction (vectorised batch, stationary skip, ~0.5ms)
   ├─ Collision detection (time-to-collision + severity alerts)
   └─ ThreatScorer → threat assessment with trajectory awareness
        ↓
   WebSocket broadcast → PWA (hologram, vitals, threat, collisions)
        ↓
   Enriched LLM context → "person approaching at 1.2m/s, 3.8m away"
+
+Ambient Awareness (always-on, parallel thread):
+  Camera Frame → DIS Flow 160x120 (~2ms) → ego-motion check + motion energy
+       ↓
+  Trigger: motion_detected | ego_motion_start/stop | scene_change
+       ↓
+  Escalate → Full YOLOE + Perception → Proactive TTS
 ```
 
 </details>
@@ -385,6 +405,7 @@ vision/
   ego_motion.py          Camera ego-motion via RANSAC fundamental matrix
   trajectory.py          Trajectory prediction + collision detection + alerts
   perception.py          Fused perception pipeline (flow→ego→velocity→trajectory)
+  ambient.py             Ambient awareness — always-on motion detection (hands-free mode)
   vitals.py              Fatigue (EAR), posture scoring, rPPG heart rate
   threat.py              Threat/anomaly scoring with trajectory awareness
   proximity.py           Distance-based proximity alerts for portable mode
@@ -413,7 +434,7 @@ pwa/                     SvelteKit PWA frontend
   Toast                  Notification toasts
 
 scripts/                 Setup, export, and bootstrap scripts
-tests/                   395 tests (334 unit + 61 E2E) with pytest
+tests/                   367+ tests (344 unit + 23+ E2E) with pytest
 models/                  TTS voices, TensorRT engines
 ```
 
@@ -485,7 +506,7 @@ All settings are environment variables with sane defaults. Key ones:
 | `JARVIS_VISION_DEPTH_EVERY` | `3` | Depth every Nth broadcast |
 | | **Perception** | |
 | `JARVIS_PERCEPTION_ENABLED` | `1` | Enable advanced perception pipeline |
-| `JARVIS_FLOW_METHOD` | `farneback` | Optical flow method (`farneback` or `dis`) |
+| `JARVIS_FLOW_METHOD` | `dis` | Optical flow method (`dis` or `farneback`) |
 | `JARVIS_FLOW_WIDTH` | `320` | Flow computation width |
 | `JARVIS_FLOW_HEIGHT` | `240` | Flow computation height |
 | `JARVIS_TRAJ_HORIZON` | `3.0` | Trajectory prediction horizon (seconds) |
@@ -504,6 +525,12 @@ All settings are environment variables with sane defaults. Key ones:
 | `JARVIS_SUMMARY_EVERY_N` | `6` | Summarise memory every N turns |
 | `JARVIS_PROACTIVE_IDLE_SEC` | `300` | Seconds idle before proactive comment |
 | `JARVIS_MAX_TOOL_CALLS` | `3` | Max tool calls per LLM turn |
+| | **Ambient / Hands-free** | |
+| `JARVIS_AMBIENT_ENABLED` | `0` | Enable always-on ambient awareness (auto-enabled in portable mode) |
+| `JARVIS_PROACTIVE_WALK_SEC` | `15` | Full scan interval in walk mode (seconds) |
+| `JARVIS_THERMAL_AMBIENT_C` | `70` | Thermal threshold for ambient duty cycle reduction |
+| `JARVIS_BATTERY_LOW_PCT` | `15` | Battery % threshold for conservation mode |
+| `JARVIS_PROACTIVE_COOLDOWN_SEC` | `10` | Min seconds between non-critical proactive messages |
 | | **Portable mode** | |
 | `JARVIS_PORTABLE` | `0` | Enable portable mode |
 | `JARVIS_PORTABLE_WIDTH` | `320` | Camera width (portable) |
@@ -524,21 +551,21 @@ All settings are environment variables with sane defaults. Key ones:
 source venv/bin/activate
 
 ruff check .                        # Lint
-pytest tests/unit/                  # 334 unit tests
+pytest tests/unit/                  # 344 unit tests
 pytest tests/e2e/ -m e2e            # E2E tests (requires hardware)
 python main.py --dry-run            # Smoke test
 ```
 
 | Module | Coverage |
 |:---|:---|
-| `audio/*` | Playback, Bluetooth reconnect/daemon, VAD recording |
-| `vision/*` | Scene enrichment, pipeline, tracker, depth, vitals, threat, proximity, flow, ego-motion, trajectory, perception |
+| `audio/*` | Playback, Bluetooth reconnect/daemon, VAD recording (BT-aware threshold) |
+| `vision/*` | Scene, pipeline, tracker, depth, vitals, threat, proximity, flow, ego-motion, trajectory, perception, **ambient awareness** |
 | `server/*` | WebSocket bridge, message sequencing, hologram/vitals/threat handling |
 | `llm/*` | Ollama client, context builder, OOM recovery with vision pause |
 | `tools.py` | Tool schemas, registry, execution |
-| `orchestrator.py` | Intent routing, tool dispatch, proactive intelligence, background scene |
+| `orchestrator.py` | Intent routing, tool dispatch, proactive intelligence, background scene, **ambient event handling** |
 | `utils/*` | Preflight checks, power/battery monitoring, reminders |
-| E2E | Vision benchmarks, hologram pipeline, vitals, portable mode, perception pipeline |
+| E2E | Vision benchmarks, hologram pipeline, vitals, portable mode, **perception latency (<15ms)**, **ambient awareness**, **hands-free mode** |
 
 ---
 
@@ -549,9 +576,12 @@ python main.py --dry-run            # Smoke test
 - [x] **Flow-assisted tracking** — 60/40 flow/Kalman blending in ByteTrack for fewer ID switches
 - [x] **Walk-around awareness** — ego-motion estimation with walking/panning/turning classification
 - [x] **Proactive collision alerts** — time-to-collision estimation with voiced warnings
+- [x] **Perception <15ms** — DIS default, pre-alloc buffers, ego-motion caching, vectorised trajectory (avg 8ms, p95 10ms)
+- [x] **Hands-free walk-around mode** — ambient awareness loop (160x120 DIS, 2-5 Hz), proactive verbalization, thermal/battery auto-pause
+- [x] **Fluidity fixes** — BT-aware VAD, listening chime, verbal error recovery, ack-based PWA loading, WS reorder buffer, connection health
 
 ### Planned
-- [ ] **RAFT TensorRT** — neural optical flow for higher accuracy at ~30ms (replace Farneback)
+- [ ] **RAFT TensorRT** — neural optical flow for higher accuracy at ~30ms (replace DIS for high-accuracy mode)
 - [ ] **Lightweight SLAM** — ORB-SLAM3 mini or DROID-SLAM lite for persistent 3D maps
 - [ ] **VLM integration** — LLaVA / Qwen-VL for native image understanding (replace scene-description injection)
 - [ ] **Multi-room / multi-camera** — USB hub + camera switching per room

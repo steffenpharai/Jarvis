@@ -128,3 +128,70 @@ class TestBenchmarkScene:
         avg = sum(latencies) / len(latencies)
         print(f"\nEnriched scene desc avg latency: {avg:.3f}ms (100 iterations)")
         assert avg < 20, f"Scene description too slow: {avg:.1f}ms avg (target <5ms)"
+
+
+@pytest.mark.e2e
+class TestBenchmarkPerception:
+    """Benchmark the fused perception pipeline (flow + ego-motion + trajectory)."""
+
+    def test_perception_pipeline_latency(self):
+        """Full perception pipeline should be <15ms at 320x240 with 10 objects."""
+        from vision.flow import FlowMethod
+        from vision.perception import PerceptionPipeline
+        from vision.tracker import TrackedObject
+
+        pipeline = PerceptionPipeline(
+            flow_method=FlowMethod.DIS,
+            flow_resize=(320, 240),
+            fps=10.0,
+            portable_mode=True,
+        )
+
+        np.random.seed(42)
+        base = np.random.randint(0, 200, (240, 320, 3), dtype=np.uint8)
+        tracks = [
+            TrackedObject(
+                track_id=i,
+                xyxy=[i * 30, i * 20, i * 30 + 60, i * 20 + 60],
+                cls=0, class_name="person",
+                velocity=[float(i), float(i * 0.5)],
+                frames_seen=10, age=0, last_seen=time.monotonic(),
+            )
+            for i in range(10)
+        ]
+        dets = [{"xyxy": t.xyxy, "conf": 0.9, "cls": 0} for t in tracks]
+
+        # Warm up
+        pipeline.process_frame(base, dets, tracks)
+
+        latencies = []
+        for i in range(100):
+            shifted = np.roll(base, i % 10, axis=1)
+            result, _ = _timed(pipeline.process_frame, shifted, dets, tracks)
+            latencies.append(result.total_ms)
+
+        avg = sum(latencies) / len(latencies)
+        p95 = sorted(latencies)[94]
+        print(f"\nPerception pipeline: avg={avg:.1f}ms  p95={p95:.1f}ms")
+        assert avg < 20, f"Perception avg {avg:.1f}ms too slow (target <15ms)"
+
+    def test_ego_motion_cache_speedup(self):
+        """Ego-motion caching should reduce average ego-motion time."""
+        from vision.ego_motion import estimate_ego_motion, reset_ego_cache
+
+        np.random.seed(42)
+        # Static scene points
+        prev = np.random.rand(80, 2).astype(np.float64) * 300 + 10
+        curr = prev + 0.3  # tiny motion → static
+
+        reset_ego_cache()
+
+        latencies = []
+        for _ in range(50):
+            _, ms = _timed(estimate_ego_motion, prev, curr, motion_threshold=1.0)
+            latencies.append(ms)
+
+        avg = sum(latencies) / len(latencies)
+        print(f"\nEgo-motion (static, with cache): avg={avg:.3f}ms")
+        # Should be very fast due to caching
+        assert avg < 5, f"Ego-motion with cache too slow: {avg:.1f}ms"

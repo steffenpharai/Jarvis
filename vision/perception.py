@@ -117,8 +117,10 @@ class PerceptionPipeline:
         prediction_horizon: float = 3.0,
         collision_zone_m: float = 2.0,
         fps: float = 30.0,
+        portable_mode: bool = False,
     ):
         self.fps = fps
+        self.portable_mode = portable_mode
         self.flow_estimator = OpticalFlowEstimator(
             method=flow_method, resize=flow_resize,
         )
@@ -166,7 +168,8 @@ class PerceptionPipeline:
         result.flow = flow_result
         result.flow_ms = (time.monotonic() - t0) * 1000
 
-        # Motion energy (for adaptive duty cycle)
+        # Motion energy computed lazily -- only when flow is available
+        # and only accessed by ambient awareness (not blocking main path)
         if flow_result.flow is not None:
             result.motion_energy = compute_motion_energy(flow_result.flow)
 
@@ -182,6 +185,9 @@ class PerceptionPipeline:
             flow_result.prev_points,
             flow_result.curr_points,
             frame_size=flow_size,
+            # Skip expensive recoverPose in portable mode -- ego_dx/ego_dy
+            # from median inlier flow is sufficient for compensation.
+            skip_rotation=self.portable_mode,
         )
         result.ego_motion = ego
         result.ego_motion_ms = (time.monotonic() - t0) * 1000
@@ -193,7 +199,7 @@ class PerceptionPipeline:
         else:
             result.ego_summary = "Camera static"
 
-        # ── 4. Ego-motion compensation ────────────────────────────
+        # ── 4. Ego-motion compensation (vectorised) ───────────────
         compensated = compensate_ego_motion(raw_flows, ego)
         result.ego_compensated_flows = compensated
 
@@ -218,7 +224,7 @@ class PerceptionPipeline:
                 velocities_mps.append(None)
         result.object_velocities_mps = velocities_mps
 
-        # ── 6. Trajectory prediction ──────────────────────────────
+        # ── 6. Trajectory prediction (vectorised batch) ───────────
         t0 = time.monotonic()
         trajectories, alerts = self.trajectory_predictor.predict_all(
             tracked_objects,
@@ -239,6 +245,15 @@ class PerceptionPipeline:
         )
 
         result.total_ms = (time.monotonic() - t_start) * 1000
+
+        # ── Timing guard: warn if perception budget exceeded ──────
+        if result.total_ms > 15.0:
+            logger.debug(
+                "Perception budget exceeded: %.1fms (flow=%.1f ego=%.1f traj=%.1f)",
+                result.total_ms, result.flow_ms, result.ego_motion_ms,
+                result.trajectory_ms,
+            )
+
         return result
 
     def reset(self) -> None:

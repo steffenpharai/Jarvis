@@ -22,7 +22,7 @@ _bt_reconnect_thread: threading.Thread | None = None
 # Rate limits for reconnect attempts
 _BT_RECONNECT_BASE_DELAY = 2.0      # seconds
 _BT_RECONNECT_MAX_DELAY = 60.0      # seconds
-_BT_RECONNECT_CHECK_INTERVAL = 15.0  # how often to check connection
+_BT_RECONNECT_CHECK_INTERVAL = 10.0  # how often to check connection (10s for faster detection)
 
 
 def start_bt_auto_reconnect(
@@ -92,6 +92,8 @@ def start_bt_auto_reconnect(
             )
             if reconnect_bluetooth():
                 logger.info("BT auto-reconnect succeeded")
+                # Verify audio routing is correctly set to BT sink
+                _verify_bt_audio_route()
                 was_connected = True
                 consecutive_failures = 0
                 if on_reconnect:
@@ -198,4 +200,40 @@ def is_bluetooth_audio_connected() -> bool:
     source = get_default_source_name()
     if source and "bluez" in source.lower():
         return True
+    return False
+
+
+def _verify_bt_audio_route() -> bool:
+    """Verify BT audio routing is active after reconnect.
+
+    After bluetoothctl reports a successful connect, PulseAudio may not
+    automatically switch the default sink to the BT device.  This helper
+    checks and forces the route if needed.
+
+    Returns True if BT sink is (now) the default.
+    """
+    if is_bluetooth_audio_connected():
+        return True
+
+    # Find the bluez sink and set it as default
+    try:
+        out = subprocess.run(
+            ["pactl", "list", "sinks", "short"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode != 0:
+            return False
+
+        for line in out.stdout.strip().split("\n"):
+            if "bluez" in line.lower():
+                sink_name = line.split("\t")[1] if "\t" in line else line.split()[1]
+                set_result = subprocess.run(
+                    ["pactl", "set-default-sink", sink_name],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if set_result.returncode == 0:
+                    logger.info("BT audio route forced to %s", sink_name)
+                    return True
+    except Exception as e:
+        logger.debug("BT audio route verification failed: %s", e)
     return False

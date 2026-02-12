@@ -2,7 +2,7 @@
   Top status bar: connection indicator, orchestrator status, threat level, vitals summary.
 -->
 <script lang="ts">
-	import { connectionStatus, orchestratorStatus, threatData, vitalsData } from '$lib/stores/connection';
+	import { connectionStatus, connectionHealth, orchestratorStatus, threatData, vitalsData } from '$lib/stores/connection';
 
 	const statusColors: Record<string, string> = {
 		connected: 'bg-[var(--color-jarvis-green)]',
@@ -27,9 +27,19 @@
 	};
 
 	let connStatus = $derived($connectionStatus);
+	let connHealth = $derived($connectionHealth);
 	let orchStatus = $derived($orchestratorStatus);
 	let threat = $derived($threatData);
 	let vitals = $derived($vitalsData);
+
+	const healthColors: Record<string, string> = {
+		good: 'bg-[var(--color-jarvis-green)]',
+		degraded: 'bg-yellow-400 animate-pulse',
+		lost: 'bg-[var(--color-jarvis-red)] animate-pulse',
+	};
+
+	// Show health dot only when connected but degraded/lost
+	let showHealthDot = $derived(connStatus === 'connected' && connHealth !== 'good');
 
 	let threatLevel = $derived(threat?.level ?? 'clear');
 	let showThreat = $derived(threatLevel !== 'clear');
@@ -50,6 +60,13 @@
 			title="Connection: {connStatus}"
 			aria-label="Connection status: {connStatus}"
 		></span>
+		{#if showHealthDot}
+			<span
+				class="inline-block w-2 h-2 rounded-full {healthColors[connHealth]}"
+				title="Link health: {connHealth}"
+				aria-label="Connection health: {connHealth}"
+			></span>
+		{/if}
 	</div>
 
 	<div class="flex items-center gap-2">

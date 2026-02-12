@@ -15,6 +15,13 @@ Enhancements over v1:
   - Proactive intelligence (person enter/leave, object change, env shift)
   - Preflight checks at startup with verbal status
   - OOM recovery with vision pause coordination
+
+Enhancements v2 (hands-free autonomy):
+  - Ambient awareness loop (always-on DIS flow at 160x120, 2Hz)
+  - Motion-triggered full perception (no manual trigger required)
+  - Proactive verbalization with cooldown (collision, scene change, status)
+  - Verbal error recovery ("Brief comms glitch, sir")
+  - Battery/thermal adaptive duty cycle
 """
 
 import asyncio
@@ -201,6 +208,188 @@ def _check_proactive_changes(vision_data: dict) -> str | None:
     return None
 
 
+# ── Ambient awareness thread (hands-free walk-around) ─────────────────
+
+_ambient_stop: threading.Event | None = None
+_ambient_thread: threading.Thread | None = None
+# Cooldown state for proactive verbalization
+_last_proactive_verbal: float = 0.0
+
+
+def _start_ambient_thread(
+    query_queue: asyncio.Queue,
+    loop: asyncio.AbstractEventLoop,
+    bridge: object | None = None,
+) -> threading.Event:
+    """Start the ambient awareness background thread.
+
+    Continuously runs ultra-light DIS flow at 160x120 (~2ms per frame)
+    to detect motion and scene changes.  When a trigger fires, pushes
+    a _ProactiveEvent sentinel onto the query queue so the orchestrator
+    can run a full scan and optionally speak.
+    """
+    global _ambient_stop
+    _ambient_stop = threading.Event()
+
+    def _loop():
+        try:
+            from vision.ambient import AmbientAwareness
+            from vision.shared import read_frame
+        except ImportError as e:
+            logger.warning("Ambient awareness unavailable: %s", e)
+            return
+
+        ambient = AmbientAwareness(
+            cooldown_sec=getattr(settings, "PROACTIVE_COOLDOWN_SEC", 10.0),
+        )
+        logger.info("Ambient awareness thread started (%.0f Hz idle)", ambient.current_hz)
+
+        while not _ambient_stop.is_set():
+            try:
+                frame = read_frame()
+                if frame is None:
+                    _ambient_stop.wait(1.0)
+                    continue
+
+                event = ambient.check_frame(frame)
+                if event is not None and event.recommend_full_scan:
+                    # Push a sentinel that the orchestrator recognises
+                    sentinel = f"__ambient__{event.event_type.value}__{event.detail}"
+                    loop.call_soon_threadsafe(query_queue.put_nowait, sentinel)
+                    ambient.enter_cooldown()
+
+                _ambient_stop.wait(ambient.interval_sec)
+            except Exception as e:
+                logger.debug("Ambient loop error: %s", e)
+                _ambient_stop.wait(2.0)
+
+    global _ambient_thread
+    _ambient_thread = threading.Thread(target=_loop, daemon=True, name="ambient-awareness")
+    _ambient_thread.start()
+    return _ambient_stop
+
+
+def _stop_ambient_thread() -> None:
+    """Stop the ambient awareness thread."""
+    global _ambient_stop, _ambient_thread
+    if _ambient_stop is not None:
+        _ambient_stop.set()
+    _ambient_thread = None
+
+
+def _is_ambient_event(query: str) -> bool:
+    """Check if a query string is an ambient awareness sentinel."""
+    return isinstance(query, str) and query.startswith("__ambient__")
+
+
+def _parse_ambient_event(query: str) -> tuple[str, str]:
+    """Parse ambient sentinel into (event_type, detail)."""
+    parts = query.split("__", 4)
+    # parts: ['', 'ambient', event_type, detail]
+    if len(parts) >= 4:
+        return parts[2], parts[3]
+    return "unknown", ""
+
+
+async def _handle_ambient_event(
+    event_type: str,
+    detail: str,
+    bridge: object | None,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """Handle an ambient awareness event: run full scan, optionally speak.
+
+    Applies cooldown to prevent verbal spam.
+    """
+    global _last_proactive_verbal
+    from audio.output import play_wav
+    from voice.tts import synthesize
+
+    now = time.monotonic()
+    cooldown = getattr(settings, "PROACTIVE_COOLDOWN_SEC", 10.0)
+
+    # Run full enriched vision
+    say_text = None
+    try:
+        from tools import vision_analyze_full
+
+        vision_data = await loop.run_in_executor(None, vision_analyze_full, None)
+
+        # Check for collision alerts (bypass cooldown -- safety critical)
+        collision_alerts = vision_data.get("collision_alerts", [])
+        for ca in collision_alerts:
+            if ca.get("severity") in ("critical", "warning"):
+                say_text = ca.get("message", "")
+                break
+
+        # Check for environmental changes
+        if say_text is None:
+            change_alert = _check_proactive_changes(vision_data)
+            if change_alert and (now - _last_proactive_verbal) > cooldown:
+                say_text = change_alert
+
+        # Motion state transitions (with cooldown)
+        if say_text is None and (now - _last_proactive_verbal) > cooldown:
+            if event_type == "ego_motion_start":
+                say_text = "Walking mode activated, sir. Increasing scan rate."
+            elif event_type == "ego_motion_stop":
+                say_text = "Stationary. Reducing scan rate to conserve power."
+            elif event_type == "scene_change":
+                say_text = "New area detected, sir. Scanning surroundings."
+            elif event_type == "thermal_throttle":
+                say_text = "Thermal limit reached, sir. Reducing vision processing."
+            elif event_type == "battery_low":
+                say_text = "Battery low, sir. Entering conservation mode."
+
+        # Broadcast perception data to PWA
+        if bridge is not None:
+            perception_text = vision_data.get("perception_text", "")
+            if perception_text:
+                await bridge.broadcast({
+                    "type": "perception",
+                    "data": {"summary": perception_text},
+                })
+
+    except Exception as e:
+        logger.debug("Ambient full scan failed: %s", e)
+
+    # Speak and broadcast
+    if say_text:
+        _last_proactive_verbal = now
+        wav = await loop.run_in_executor(None, synthesize, say_text, settings.TTS_VOICE)
+        if wav:
+            await loop.run_in_executor(None, play_wav, wav)
+        if bridge is not None:
+            await bridge.send_proactive(say_text)
+
+
+async def _verbal_error(
+    bridge: object | None,
+    message: str,
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
+    """Speak an error message via TTS and broadcast to PWA.
+
+    Used for graceful verbal recovery instead of silent failures.
+    """
+    try:
+        from audio.output import play_wav
+        from voice.tts import synthesize
+
+        if loop is None:
+            loop = asyncio.get_running_loop()
+        wav = await loop.run_in_executor(None, synthesize, message, settings.TTS_VOICE)
+        if wav:
+            await loop.run_in_executor(None, play_wav, wav)
+    except Exception:
+        pass
+    if bridge is not None:
+        try:
+            await bridge.send_error(message)
+        except Exception:
+            pass
+
+
 def _wake_listener_impl(
     query_queue: asyncio.Queue,
     loop: asyncio.AbstractEventLoop,
@@ -228,10 +417,29 @@ def _wake_listener_impl(
         use_vad = False
         logger.info("VAD not available; using fixed-duration recording")
 
+    # Pre-synthesize "listening" chime at boot for instant playback on wake.
+    # This avoids a ~200ms TTS latency each time the wake word fires.
+    _listening_chime_wav: str | None = None
+    try:
+        from voice.tts import synthesize as _synth
+        _listening_chime_wav = _synth("Listening, sir.", voice=settings.TTS_VOICE)
+        if _listening_chime_wav:
+            logger.info("Listening chime pre-synthesized: %s", _listening_chime_wav)
+    except Exception as e:
+        logger.debug("Failed to pre-synthesize listening chime: %s", e)
+
     def on_wake():
         if stop_event.is_set():
             return
         status_cb("Listening (recording)")
+
+        # Play the pre-synthesized chime for immediate feedback
+        if _listening_chime_wav:
+            try:
+                from audio.output import play_wav
+                play_wav(_listening_chime_wav)
+            except Exception:
+                pass
         device_index = get_default_input_index()
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             wav_path = f.name
@@ -461,6 +669,13 @@ async def run_orchestrator(
     # ── Background scene context thread ───────────────────────────────
     bg_scene_stop = _start_bg_scene_thread()
 
+    # ── Ambient awareness thread (hands-free walk-around) ─────────────
+    ambient_enabled = getattr(settings, "AMBIENT_AWARENESS_ENABLED", False) or getattr(settings, "PORTABLE_MODE", False)
+    ambient_stop: threading.Event | None = None
+    if ambient_enabled:
+        ambient_stop = _start_ambient_thread(query_queue, loop, bridge)
+        logger.info("Ambient awareness enabled (hands-free walk-around mode)")
+
     if not is_ollama_available(settings.OLLAMA_BASE_URL):
         logger.error("Ollama not available. Start: bash scripts/start-ollama.sh")
         return
@@ -568,6 +783,17 @@ async def run_orchestrator(
                     idle_since = time.monotonic()
                 continue
 
+            # ── Handle ambient awareness events (hands-free) ──────
+            if _is_ambient_event(str(query)):
+                event_type, detail = _parse_ambient_event(str(query))
+                logger.debug("Ambient event: %s — %s", event_type, detail)
+                try:
+                    await _handle_ambient_event(event_type, detail, bridge, loop)
+                except Exception as e:
+                    logger.debug("Ambient event handling failed: %s", e)
+                idle_since = time.monotonic()
+                continue
+
             if not query or not str(query).strip():
                 status_cb("Speaking")
                 no_catch = "My apologies, sir. I didn't quite catch that."
@@ -647,6 +873,7 @@ async def run_orchestrator(
                         final = "A momentary glitch in my systems, sir. Shall we try that again?"
                     else:
                         await _thinking_async(bridge, "retry", "Retrying reasoning...")
+                        await _verbal_error(bridge, "Brief comms glitch, sir. Retrying.", loop)
                         final = "Retrying."
             await _thinking_async(bridge, "speaking", "Formulating response...")
             status_cb("Speaking")
@@ -693,6 +920,9 @@ async def run_orchestrator(
     finally:
         stop_event.set()
         bg_scene_stop.set()
+        if ambient_stop is not None:
+            ambient_stop.set()
+        _stop_ambient_thread()
         try:
             from audio.bluetooth import stop_bt_auto_reconnect
             stop_bt_auto_reconnect()

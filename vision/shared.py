@@ -793,12 +793,14 @@ def get_perception_pipeline():
             if getattr(settings, "PORTABLE_MODE", False):
                 fps = getattr(settings, "PORTABLE_FPS", 10)
 
+            portable = getattr(settings, "PORTABLE_MODE", False)
             _perception_pipeline = PerceptionPipeline(
                 flow_method=flow_method,
                 flow_resize=(flow_w, flow_h),
                 prediction_horizon=horizon,
                 collision_zone_m=collision_zone,
                 fps=fps,
+                portable_mode=portable,
             )
             logger.info(
                 "Perception pipeline initialised: flow=%s %dx%d, horizon=%.1fs",

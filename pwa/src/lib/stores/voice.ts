@@ -91,6 +91,30 @@ export function initSpeechRecognition() {
 			// Normal in push-to-talk
 			return;
 		}
+		if (event.error === 'network') {
+			// Network error (common on Jetson LAN) — retry after 1s
+			console.warn('Speech recognition network error — retrying in 1s');
+			isRunning = false;
+			setTimeout(() => {
+				if (get(isListening)) {
+					try {
+						recognition?.start();
+						isRunning = true;
+					} catch {
+						isListening.set(false);
+					}
+				}
+			}, 1000);
+			return;
+		}
+		if (event.error === 'not-allowed') {
+			// Mic permission denied — disable mic button
+			console.warn('Microphone permission denied');
+			speechSupported.set(false);
+			isListening.set(false);
+			isRunning = false;
+			return;
+		}
 		console.warn('Speech recognition error:', event.error);
 		isListening.set(false);
 		isRunning = false;

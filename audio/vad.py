@@ -32,7 +32,11 @@ FRAME_DURATION_MS = 30
 # How long silence must persist before we stop recording (seconds)
 SILENCE_THRESHOLD_SEC = 1.5
 
-# Maximum recording duration (seconds) — safety cap
+# BT audio has higher latency (~200ms) which causes false end-of-speech.
+# Use a longer silence threshold when BT audio is connected.
+BT_SILENCE_THRESHOLD_SEC = 2.0
+
+# Maximum recording duration (seconds) -- safety cap
 MAX_RECORD_SEC = 15.0
 
 # Minimum recording duration before we start checking for silence
@@ -50,7 +54,7 @@ def record_with_vad(
     sample_rate: int = 16000,
     device_index: int | None = None,
     aggressiveness: int = VAD_AGGRESSIVENESS,
-    silence_threshold_sec: float = SILENCE_THRESHOLD_SEC,
+    silence_threshold_sec: float | None = None,
     max_duration_sec: float = MAX_RECORD_SEC,
     min_duration_sec: float = MIN_RECORD_SEC,
     pre_speech_timeout_sec: float = PRE_SPEECH_TIMEOUT_SEC,
@@ -59,12 +63,27 @@ def record_with_vad(
 
     Returns True if audio was captured, False on failure or silence-only.
 
+    If ``silence_threshold_sec`` is None (default), automatically uses
+    a longer threshold when Bluetooth audio is connected to compensate
+    for BT codec latency that causes false end-of-speech detections.
+
     Algorithm:
     1. Wait for speech onset (MIN_VOICED_FRAMES consecutive voiced frames)
     2. Record while speech continues
-    3. Stop after SILENCE_THRESHOLD_SEC of continuous silence
+    3. Stop after silence_threshold_sec of continuous silence
     4. Safety: stop after MAX_RECORD_SEC regardless
     """
+    # Auto-detect BT audio and use longer silence threshold
+    if silence_threshold_sec is None:
+        try:
+            from audio.bluetooth import is_bluetooth_audio_connected
+            if is_bluetooth_audio_connected():
+                silence_threshold_sec = BT_SILENCE_THRESHOLD_SEC
+                logger.debug("BT audio detected: using %.1fs silence threshold", silence_threshold_sec)
+            else:
+                silence_threshold_sec = SILENCE_THRESHOLD_SEC
+        except Exception:
+            silence_threshold_sec = SILENCE_THRESHOLD_SEC
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 

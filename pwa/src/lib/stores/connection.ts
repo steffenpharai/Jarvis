@@ -194,9 +194,16 @@ const _pendingAcks: Map<string, { resolve: () => void; timer: ReturnType<typeof 
 /** Debounce timers for button actions */
 const _actionDebounce: Map<string, ReturnType<typeof setTimeout>> = new Map();
 
-/** Heartbeat interval */
+/** Heartbeat interval and health tracking */
 let _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 const HEARTBEAT_INTERVAL = 30_000;
+let _lastPongTime = 0;
+let _missedPongs = 0;
+const PONG_TIMEOUT = 5_000;
+const MAX_MISSED_PONGS = 3;
+
+/** Connection health: 'good' | 'degraded' | 'lost' */
+export const connectionHealth = writable<'good' | 'degraded' | 'lost'>('good');
 
 /** Generate a unique request ID */
 function _genRequestId(): string {
@@ -263,32 +270,8 @@ function getWsUrl(): string {
 	return `${protocol}://${host}/ws`;
 }
 
-function handleMessage(event: MessageEvent) {
-	try {
-		const msg: JarvisMessage = JSON.parse(event.data);
-
-		// Handle ack messages
-		if (msg.type === 'ack' && msg.request_id) {
-			const pending = _pendingAcks.get(msg.request_id as string);
-			if (pending) {
-				clearTimeout(pending.timer);
-				pending.resolve();
-				_pendingAcks.delete(msg.request_id as string);
-			}
-			return;
-		}
-
-		// Handle pong (heartbeat response)
-		if (msg.type === 'pong') return;
-
-		// Track sequence numbers (warn on out-of-order, but don't drop)
-		const seq = msg._seq as number | undefined;
-		if (seq !== undefined && seq <= _lastSeq) {
-			// Out of order but still process (WS guarantees in-order per connection)
-		}
-		if (seq !== undefined) _lastSeq = seq;
-
-		switch (msg.type) {
+function _processMessage(msg: JarvisMessage) {
+	switch (msg.type) {
 			case 'status':
 				orchestratorStatus.set(msg.status as string);
 				break;
@@ -383,10 +366,51 @@ function handleMessage(event: MessageEvent) {
 				threatData.set((msg.data as ThreatData) || null);
 				break;
 
-			case 'error':
-				lastError.set(msg.message as string);
-				break;
+		case 'error':
+			lastError.set(msg.message as string);
+			break;
+	}
+}
+
+function handleMessage(event: MessageEvent) {
+	try {
+		const msg: JarvisMessage = JSON.parse(event.data);
+
+		// Handle ack messages
+		if (msg.type === 'ack' && msg.request_id) {
+			const pending = _pendingAcks.get(msg.request_id as string);
+			if (pending) {
+				clearTimeout(pending.timer);
+				pending.resolve();
+				_pendingAcks.delete(msg.request_id as string);
+			}
+			return;
 		}
+
+		// Handle pong (heartbeat response) — track health
+		if (msg.type === 'pong') {
+			_lastPongTime = Date.now();
+			_missedPongs = 0;
+			connectionHealth.set('good');
+			return;
+		}
+
+		// Track sequence numbers for ordering
+		const seq = msg._seq as number | undefined;
+		if (seq !== undefined) {
+			// If we detect a gap > 1, hold the message briefly to allow
+			// the missing message to arrive (prevents "reply before transcript" race)
+			if (seq > _lastSeq + 1 && _lastSeq > 0) {
+				setTimeout(() => {
+					_processMessage(msg);
+				}, 50);
+				_lastSeq = Math.max(_lastSeq, seq);
+				return;
+			}
+			_lastSeq = Math.max(_lastSeq, seq);
+		}
+
+		_processMessage(msg);
 	} catch {
 		// Ignore malformed messages
 	}
@@ -426,13 +450,30 @@ export function connect() {
 
 	ws.onopen = () => {
 		connectionStatus.set('connected');
+		connectionHealth.set('good');
 		reconnectAttempt = 0;
 		_lastSeq = 0;
+		_missedPongs = 0;
+		_lastPongTime = Date.now();
 		flushQueue();
-		// Start heartbeat
+		// Resync state after reconnect
+		sendMessage({ type: 'get_status' });
+		// Start heartbeat with health tracking
 		if (_heartbeatTimer) clearInterval(_heartbeatTimer);
 		_heartbeatTimer = setInterval(() => {
 			if (ws?.readyState === WebSocket.OPEN) {
+				// Check if previous pong was received
+				if (Date.now() - _lastPongTime > PONG_TIMEOUT) {
+					_missedPongs++;
+					if (_missedPongs >= MAX_MISSED_PONGS) {
+						connectionHealth.set('lost');
+						// Force reconnect
+						ws?.close();
+						return;
+					} else {
+						connectionHealth.set('degraded');
+					}
+				}
 				ws.send(JSON.stringify({ type: 'ping' }));
 			}
 		}, HEARTBEAT_INTERVAL);
@@ -442,6 +483,7 @@ export function connect() {
 
 	ws.onclose = () => {
 		connectionStatus.set('disconnected');
+		connectionHealth.set('lost');
 		ws = null;
 		if (_heartbeatTimer) {
 			clearInterval(_heartbeatTimer);
@@ -495,9 +537,19 @@ export function sendScan() {
 	_debouncedAction('scan', () => _sendWithAck({ type: 'scan' }), 300);
 }
 
+/** Async: request scan, resolves when server acks */
+export function sendScanAsync(): Promise<void> {
+	return _sendWithAck({ type: 'scan' });
+}
+
 /** Convenience: request system status (debounced) */
 export function sendGetStatus() {
 	_debouncedAction('get_status', () => _sendWithAck({ type: 'get_status' }), 300);
+}
+
+/** Async: request status, resolves when server acks */
+export function sendGetStatusAsync(): Promise<void> {
+	return _sendWithAck({ type: 'get_status' });
 }
 
 /** Convenience: toggle sarcasm (debounced) */
@@ -510,9 +562,19 @@ export function sendHologramRequest() {
 	_debouncedAction('hologram', () => _sendWithAck({ type: 'hologram_request' }), 500);
 }
 
+/** Async: request hologram, resolves when server acks */
+export function sendHologramRequestAsync(): Promise<void> {
+	return _sendWithAck({ type: 'hologram_request' });
+}
+
 /** Convenience: request vitals update (debounced) */
 export function sendVitalsRequest() {
 	_debouncedAction('vitals', () => _sendWithAck({ type: 'vitals_request' }), 500);
+}
+
+/** Async: request vitals, resolves when server acks */
+export function sendVitalsRequestAsync(): Promise<void> {
+	return _sendWithAck({ type: 'vitals_request' });
 }
 
 /** Convenience: send interrupt (immediate, no debounce) */
